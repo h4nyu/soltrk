@@ -56,7 +56,7 @@ The GTB-800's exact Tuya dp schema isn't published, so don't trust the
 After building once (`docker compose build soltrk`), run:
 
 ```
-docker compose run --rm soltrk node dist/tuya/discover.js <id> <key> <ip>
+docker compose run --rm soltrk npx tsx src/tuya/discover.ts <id> <key> <ip>
 ```
 
 Watch which `dp` code moves in sync with the panel's actual instantaneous
@@ -87,5 +87,13 @@ Query current state any time with either:
 
 ```
 cat data/state.json
-docker compose exec soltrk node dist/index.js status
+docker compose exec soltrk npx tsx src/index.ts status
 ```
+
+## Development
+
+`./src` (soltrk) and `./anker-driver/app.py` are bind-mounted into their
+containers, and both run with auto-reload (`tsx watch`, `uvicorn --reload`).
+Edit and save - no `docker compose build` needed. A rebuild is only required
+after changing `package.json`/`requirements.txt` (i.e. dependencies) or a
+`Dockerfile`.

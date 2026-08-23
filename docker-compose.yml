@@ -4,6 +4,8 @@ services:
     env_file: .env
     ports:
       - "8000:8000"
+    volumes:
+      - ./anker-driver/app.py:/app/app.py
     restart: unless-stopped
 
   soltrk:
@@ -15,4 +17,5 @@ services:
       - anker-driver
     volumes:
       - ./data:/app/data
+      - ./src:/app/src
     restart: unless-stopped
