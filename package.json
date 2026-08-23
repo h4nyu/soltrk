@@ -8,14 +8,15 @@
   ],
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts run",
+    "start": "node dist/cli/src/index.js",
+    "dev": "tsx watch packages/cli/src/index.ts run",
     "test": "find . -name '*.test.ts' -not -path '*/node_modules/*' | xargs tsx --test"
   },
   "dependencies": {
     "@soltrk/core": "*",
     "@soltrk/anker": "*",
     "@soltrk/tuya": "*",
+    "@soltrk/cli": "*",
     "tsx": "^4.19.0"
   },
   "devDependencies": {

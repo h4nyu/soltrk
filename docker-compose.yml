@@ -30,8 +30,8 @@ x-env: &env
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path
   # matching the ./data volume mount) - they're hardcoded directly in
-  # src/config.ts / packages/anker/src/httpApi.ts instead of being threaded
-  # through as env vars.
+  # packages/cli/src/config.ts / packages/anker/src/httpApi.ts instead of
+  # being threaded through as env vars.
 
 services:
   soltrk:
@@ -40,6 +40,5 @@ services:
       <<: *env
     volumes:
       - ./data:/app/data
-      - ./src:/app/src
       - ./packages:/app/packages
     restart: unless-stopped

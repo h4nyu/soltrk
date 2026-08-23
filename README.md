@@ -19,10 +19,10 @@ adapters), the same shape as the sibling `picomanager` project:
   hand-reverse-engineered A1765 wire format. See "How it works" below.
 - **`packages/tuya`** - the one `SolarSource` adapter today: reads the two
   GTB-800 microinverters over the Tuya *local* protocol (no cloud).
-- **`src/`** - the composition root / app: env var parsing (`config.ts`),
-  the vendor registry that wires `NativeAnkerClient` into the `BatteryDriver`
-  port (`battery/registry.ts`, analogous to picomanager's `Infrastructure()`
-  factory), and the CLI entrypoint (`index.ts`).
+- **`packages/cli`** - the composition root / app: env var parsing
+  (`config.ts`), the vendor registry that wires `NativeAnkerClient` into the
+  `BatteryDriver` port (`battery/registry.ts`, analogous to picomanager's
+  `Infrastructure()` factory), and the CLI entrypoint (`index.ts`).
 
 ## How it works
 
@@ -151,8 +151,8 @@ one entry per battery:
 Lower `priority` number charges first; a unit is skipped once its SOC hits
 100%. Edit the file directly (e.g. reorder the numbers) to change it; `name`
 is just for readable logs/`status` output, and `vendor` selects which
-adapter in `src/battery/registry.ts` talks to that serial (defaults to
-`"anker"` if omitted - see Architecture below).
+adapter in `packages/cli/src/battery/registry.ts` talks to that serial
+(defaults to `"anker"` if omitted - see Architecture below).
 
 ### 5. Run
 
@@ -164,7 +164,7 @@ Query current state any time with either:
 
 ```
 cat data/state.json
-docker compose exec soltrk npx tsx src/index.ts status
+docker compose exec soltrk npx tsx packages/cli/src/index.ts status
 ```
 
 ## Architecture: adding another battery/charger vendor
@@ -183,24 +183,24 @@ type BatteryDriver = {
 `NativeAnkerClient` (`packages/anker`) is the one adapter implementing it
 today. To add a second brand: create a new `packages/<vendor>` implementing
 `BatteryDriver` (depending on `@soltrk/core` for the port type, nothing
-else), register an instance of it in `src/battery/registry.ts` under a
-vendor key, and tag that battery's `data/priority.json` entry with
+else), register an instance of it in `packages/cli/src/battery/registry.ts`
+under a vendor key, and tag that battery's `data/priority.json` entry with
 `"vendor": "<your key>"`. No changes needed in `packages/core`. The same
 pattern applies to solar sources via the `SolarSource` port if you ever add
 a second panel/inverter integration.
 
 ## Development
 
-`./src` and `./packages` are bind-mounted into the container and it runs
-with auto-reload (`tsx watch`). Edit and save - no `docker compose build`
+`./packages` is bind-mounted into the container and it runs with
+auto-reload (`tsx watch`). Edit and save - no `docker compose build`
 needed. A rebuild is only required after changing a `package.json`
 (workspace or dependency changes) or the `Dockerfile`.
 
 TypeScript compiles as a single program from the root `tsconfig.json`
-(`include: ["src", "packages/*/src"]`) rather than per-package builds -
+(`include: ["packages/*/src"]`) rather than per-package builds -
 npm workspaces here is purely for dependency/import-boundary clarity
-(`@soltrk/core`, `@soltrk/anker`, `@soltrk/tuya`), not independent
-compilation.
+(`@soltrk/core`, `@soltrk/anker`, `@soltrk/tuya`, `@soltrk/cli`), not
+independent compilation.
 
 Run the test suite (crypto cross-validated against the Python reference
 implementation with a fixed key, protocol encode/decode against real
