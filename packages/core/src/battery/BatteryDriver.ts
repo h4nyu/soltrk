@@ -15,5 +15,10 @@ export type BatteryStatus = {
 
 export type BatteryDriver = {
   getStatus(sn: string): Promise<BatteryStatus | undefined>;
-  setChargeLimit(sn: string, watts: number): Promise<boolean>;
+  // `acOn` is the allocator's AC-gate decision (see control/allocator.ts):
+  // whether this device should be connected to AC at all this cycle.
+  // Adapters without a physical gate (plain cloud drivers) just ignore it;
+  // GatedBatteryDriver acts on it. Optional so those adapters' signatures
+  // don't have to mention it.
+  setChargeLimit(sn: string, watts: number, acOn?: boolean): Promise<boolean>;
 };

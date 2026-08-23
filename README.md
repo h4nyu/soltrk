@@ -44,18 +44,25 @@ adapters), the same shape as the sibling `picomanager` project:
   cross-validated against the Anker app's own displayed values on real
   hardware (see the tests alongside it).
 - **Loop**: every `POLL_INTERVAL_MS` (default 1 minute), `soltrk` reads total
-  solar watts and picks the highest-priority Anker unit that isn't full yet.
-  If there's enough solar to bother (`MIN_SOLAR_TO_CHARGE_WATTS`), that
-  unit is asked to charge at the current solar output directly, capped at
-  the hardware max (1200W) - no gradual ramp-up. An earlier version ramped
-  this up gradually instead of jumping straight there, to avoid needlessly
-  over-asking while hardware caught up, but once the request is already
-  capped at actual solar output that gradual step mostly just adds lag
-  without much extra safety - and real solar changes gradually enough on
-  its own (observed: roughly an hour from 0 to peak in the morning) that a
-  software ramp wasn't buying anything. Every non-active unit is told to
-  charge at the hardware's minimum (100W - there's no real "0W/off", see
-  below).
+  solar watts and steers one number toward zero: `balance = solar - total
+  battery AC input` (logged each cycle and written to `data/state.json`).
+  The highest-priority unit that isn't full yet is the *active* charging
+  target: it's asked to charge at the current solar output *minus whatever
+  the other units are already measured to be drawing* (their critical-SOC
+  rescue charging, or a full unit's passthrough - see below), capped at the
+  hardware max (1200W). No gradual ramp-up: an earlier version ramped the
+  request, but once it's capped at actual solar the ramp just added lag,
+  and real solar changes gradually enough on its own (observed: roughly an
+  hour from 0 to peak in the morning). Every non-active unit idles at the
+  hardware's minimum request (100W - there's no real "0W/off", see below);
+  whether it's actually *connected* to AC is a separate per-unit decision:
+  the active unit and any full (100% SOC) unit stay connected while solar
+  is sufficient - a full unit doesn't charge, but with AC present it passes
+  solar straight through to its own load instead of draining its battery,
+  which avoids both the 99⇄100% plug-flapping a cut-off full unit would
+  cycle through and the double conversion loss of going via the battery -
+  everything else is disconnected (see the smart-plug section under
+  One-time setup).
 
 ### Reverse engineering a new command
 
@@ -115,11 +122,11 @@ skip the disclaimers only if you understand it.
   high is what could actually cause backfeed.
 - **The requested wattage is a rough dial, not a precise one.** Real
   hardware doesn't reliably obey a specific requested wattage - a 100W
-  request was observed drawing 137W on real hardware, while a battery
-  already at 100% SOC (see below). Because of this, `soltrk` no longer tries
-  to compute an exact wattage matching solar output; it just ramps the
-  active unit's request up toward the max and lets the device's own charge
-  controller decide the real draw (see "How it works").
+  request was observed drawing 137W on real hardware. `soltrk` treats the
+  requested number as an approximate ceiling and steers by the measured
+  balance instead (see "How it works"); the ~30W conversion overhead while
+  charging is also why a full unit's passthrough (no charging, no
+  conversion) is deliberately preferred over cycling its battery.
 - **`setChargeLimit` cannot fully stop charging by itself, regardless of
   mode.** 100-1200W all work as expected, confirmed against the Anker app's
   own displayed "交流電池充電" setting on real hardware, but that setting has
