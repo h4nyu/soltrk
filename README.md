@@ -50,6 +50,36 @@ adapters), the same shape as the sibling `picomanager` project:
   "0W/off", see below), so it never gets left at a stale higher limit from
   when it was previously the active unit.
 
+### Reverse engineering a new command
+
+Every write command so far (`set_charge_limit`, `realtime_trigger`) was
+found the same way, without any TLS interception (mitmproxy etc.) - AWS IoT
+just lets our own MQTT session subscribe to the *app's own* publish topic,
+not only the device's:
+
+1. Run `docker compose run --rm soltrk npx tsx packages/anker/src/captureMqtt.ts <device_sn>`
+   - this logs into the same Anker account and subscribes to both
+   `dt/{app}/{pn}/{sn}/#` (device -> cloud) and `cmd/{app}/{pn}/{sn}/#`
+   (app -> device, i.e. the topic the real Anker app itself publishes to).
+2. Perform the action in the real Anker app (e.g. flip a setting).
+3. The script logs every message's topic and decoded hex payload on both
+   topics, including the exact command the app just sent - decode/replicate
+   it in `packages/anker/src/protocol.ts` the same way as the existing
+   commands (see `encodeSetChargeLimit`/`encodeRealtimeTrigger`).
+
+This technique has a limit, hit while trying to reverse engineer the TOU
+schedule "保存" action: `encodeSetTouSchedule` (msgtype `0x0090`) is decoded
+and byte-exact against two real captures, but publishing it ourselves does
+**not** actually change the device's behavior. That capture's
+`head.client_id` was `"cloud"`, not the app's own client id like every
+other captured command - the real write happens through a cloud HTTP
+endpoint the app calls, and the cloud relays this MQTT message as a
+downstream *notification* afterward, not as the authoritative write itself.
+Replaying only the MQTT side isn't enough for commands like this; that
+endpoint hasn't been found (checked the `anker-solix-api` project's
+Solarbank-2-equivalent, `schedule.py`'s `set_sb2_use_time` - different
+device class, and explicitly marked unimplemented there too).
+
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, not a certified zero-export device. The charger is deliberately
 commanded to draw *at least* current solar output (never less): total load
