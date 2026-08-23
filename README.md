@@ -206,13 +206,13 @@ raw watts or needs dividing (commonly by 10) to get watts.
 
 ### 3. Anker account + device serials
 
-Anker credentials and the priority seed are still plain env vars (they
-don't change often and aren't secrets-heavy the way Tuya's numbered keys
-were) - declared in the `x-env` block at the top of `docker-compose.yml`
-(required ones as bare `${VAR}`, optional ones with a `${VAR:-default}`
-fallback), which is the source of truth for what exists and its default,
-not a separate `.env.example`. Create a git-ignored `.env` next to it with
-at least `ANKER_EMAIL`, `ANKER_PASSWORD`, and `ANKER_PRIORITY_SNS`.
+Anker credentials are plain env vars (they don't change often and aren't
+secrets-heavy the way Tuya's numbered keys were) - declared in the `x-env`
+block at the top of `docker-compose.yml` (required ones as bare `${VAR}`,
+optional ones with a `${VAR:-default}` fallback), which is the source of
+truth for what exists and its default, not a separate `.env.example`.
+Create a git-ignored `.env` next to it with at least `ANKER_EMAIL` and
+`ANKER_PASSWORD`.
 
 To find your device serials, log in once via a throwaway script, e.g.:
 
@@ -220,13 +220,11 @@ To find your device serials, log in once via a throwaway script, e.g.:
 docker compose run --rm soltrk npx tsx -e "
   import('@soltrk/anker').then(async (m) => {
     const s = await m.login(process.env.ANKER_EMAIL!, process.env.ANKER_PASSWORD!, process.env.ANKER_COUNTRY ?? 'JP');
+    if (s instanceof Error) throw s;
     console.log(await m.getBindDevices(s));
   });
 "
 ```
-
-`ANKER_PRIORITY_SNS` only seeds the *initial* priority order (see below) -
-list the serials there in the order you want them charged.
 
 **Note:** the Anker cloud allows only one active login per account at a
 time - running this (or `soltrk` itself) will log the phone app out of that
@@ -237,8 +235,10 @@ logged in independently.
 
 Charge priority isn't fixed at startup: `soltrk` re-reads
 `data/priority.json` every cycle, so it can be changed live without
-restarting anything. It's seeded from `ANKER_PRIORITY_SNS` on first run,
-one entry per battery:
+restarting anything. There's no env-var seed for it (same reasoning as
+Tuya's config file - it would just be a one-time default for a file that's
+the live source of truth forever after) - create it directly, one entry
+per battery:
 
 ```json
 [
