@@ -1,0 +1,21 @@
+services:
+  anker-driver:
+    build: ./anker-driver
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./anker-driver/app.py:/app/app.py
+    restart: unless-stopped
+
+  soltrk:
+    build: .
+    env_file: .env
+    environment:
+      ANKER_DRIVER_URL: http://anker-driver:8000
+    depends_on:
+      - anker-driver
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    restart: unless-stopped
