@@ -1,6 +1,13 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { encodeRealtimeTrigger, encodeSetChargeLimit, parseA1765ParamInfo, parseTlvFields } from "./protocol";
+import {
+  encodeRealtimeTrigger,
+  encodeSetChargeLimit,
+  encodeSetTouSchedule,
+  parseA1765ParamInfo,
+  parseTlvFields,
+  TouPeriodType,
+} from "./protocol";
 
 // Real payloads captured from production units (SOLIX C1000X Gen 2 / "C1000
 // Plus"), cross-checked byte for byte against the Anker app's own live
@@ -103,6 +110,27 @@ describe("command encoding", () => {
     assert.equal(
       encoded.toString("hex"),
       "ff09220003000f0101a10122a403026400fd0e003137383734363830323636303059",
+    );
+  });
+
+  test("encodeSetTouSchedule matches a real captured all-day PEAK command", () => {
+    // Captured from the Anker app's own "保存" on the TOU schedule screen,
+    // relayed via the cloud (head.client_id: "cloud" - see protocol.ts).
+    const encoded = encodeSetTouSchedule(TouPeriodType.PEAK, 0, 24, 1787481067000);
+    assert.equal(
+      encoded.toString("hex"),
+      "ff092e0003000f0090a10122a2020101a3020100a4020100a5020106a6020101a70404010018fe0503ebcb8a6ae3",
+    );
+  });
+
+  test("encodeSetTouSchedule matches a real captured all-day OFF_PEAK command", () => {
+    // Same schedule screen, switched to Off-peak - the two captures differ
+    // by exactly one byte (the period type in the `a7` field), confirming
+    // PEAK=1/OFF_PEAK=3.
+    const encoded = encodeSetTouSchedule(TouPeriodType.OFF_PEAK, 0, 24, 1787481159000);
+    assert.equal(
+      encoded.toString("hex"),
+      "ff092e0003000f0090a10122a2020101a3020100a4020100a5020106a6020101a70404030018fe050347cc8a6a4a",
     );
   });
 });

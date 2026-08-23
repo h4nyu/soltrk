@@ -67,6 +67,19 @@ not only the device's:
    it in `packages/anker/src/protocol.ts` the same way as the existing
    commands (see `encodeSetChargeLimit`/`encodeRealtimeTrigger`).
 
+This technique has a limit, hit while trying to reverse engineer the TOU
+schedule "保存" action: `encodeSetTouSchedule` (msgtype `0x0090`) is decoded
+and byte-exact against two real captures, but publishing it ourselves does
+**not** actually change the device's behavior. That capture's
+`head.client_id` was `"cloud"`, not the app's own client id like every
+other captured command - the real write happens through a cloud HTTP
+endpoint the app calls, and the cloud relays this MQTT message as a
+downstream *notification* afterward, not as the authoritative write itself.
+Replaying only the MQTT side isn't enough for commands like this; that
+endpoint hasn't been found (checked the `anker-solix-api` project's
+Solarbank-2-equivalent, `schedule.py`'s `set_sb2_use_time` - different
+device class, and explicitly marked unimplemented there too).
+
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, not a certified zero-export device. The charger is deliberately
 commanded to draw *at least* current solar output (never less): total load
