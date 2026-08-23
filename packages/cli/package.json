@@ -11,6 +11,7 @@
     "@soltrk/core": "*",
     "@soltrk/anker": "*",
     "@soltrk/tuya": "*",
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "pino": "^9.5.0"
   }
 }

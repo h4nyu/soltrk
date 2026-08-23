@@ -5,7 +5,7 @@ import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
 import { allocate } from "./allocator";
 import { PriorityEntry, readPriority } from "./priority";
 
-type StateSnapshot = {
+export type StateSnapshot = {
   timestamp: string;
   totalSolarWatts: number;
   // Sum of every battery's measured AC input this cycle.
@@ -22,9 +22,18 @@ type StateSnapshot = {
     acInputWatts: number | undefined;
     acOutputWatts: number | undefined;
     targetWatts: number;
+    // The allocator's AC-gate decision for this device this cycle (see
+    // control/allocator.ts) - what GatedBatteryDriver switches the plug to.
+    acOn: boolean;
     lastCommandOk: boolean | undefined;
   }[];
 };
+
+// Port for persisting each cycle's snapshot somewhere durable - the
+// composition root decides where (production: appended to a JSONL file on
+// the host, see @soltrk/cli's history.ts; tests/CI: simply not provided).
+// Core stays free of any logging-library dependency this way.
+export type CycleRecorder = (snapshot: StateSnapshot) => void;
 
 export type LoopDeps = {
   solar: SolarSource;
@@ -36,6 +45,7 @@ export type LoopDeps = {
   minSolarToChargeWatts: number;
   houseStandbyWatts: number;
   stateFilePath: string;
+  recordHistory?: CycleRecorder;
 };
 
 function writeState(stateFilePath: string, snapshot: StateSnapshot): void {
@@ -101,6 +111,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
         acInputWatts: statusBySn[sn]?.acInputWatts,
         acOutputWatts: statusBySn[sn]?.acOutputWatts,
         targetWatts: target,
+        acOn: acOn[sn],
         lastCommandOk: ok,
       });
     }
@@ -108,13 +119,15 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const totalAcInputWatts = deviceStates.reduce((sum, d) => sum + (d.acInputWatts ?? 0), 0);
     const balanceWatts = totalWatts - totalAcInputWatts;
 
-    writeState(deps.stateFilePath, {
+    const snapshot: StateSnapshot = {
       timestamp: new Date().toISOString(),
       totalSolarWatts: totalWatts,
       totalAcInputWatts,
       balanceWatts,
       devices: deviceStates,
-    });
+    };
+    writeState(deps.stateFilePath, snapshot);
+    deps.recordHistory?.(snapshot);
 
     console.log(
       `[loop] solar=${totalWatts}W input=${totalAcInputWatts}W balance=${balanceWatts >= 0 ? "+" : ""}${balanceWatts}W ` +
