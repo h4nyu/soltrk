@@ -1,13 +1,27 @@
+#!/usr/bin/env -S npx tsx
+import { readFileSync } from "fs";
+import { join } from "path";
+import { Command } from "commander";
 import { runLoop } from "@soltrk/core";
 import { SolarSource as TuyaSolarSource } from "@soltrk/tuya";
-import { config } from "./config";
+import { loadConfig } from "./config";
 import { getDriver } from "./battery/registry";
 import { printStatus } from "./status";
 
-const command = process.argv[2] ?? "run";
+const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
 
-switch (command) {
-  case "run":
+const program = new Command();
+
+program
+  .name("soltrk")
+  .description("Route solar generation into Anker SOLIX batteries without backfeeding the grid")
+  .version(pkg.version);
+
+program
+  .command("run")
+  .description("Start the control loop: read solar output and set battery charge limits")
+  .action(() => {
+    const config = loadConfig();
     runLoop({
       solar: new TuyaSolarSource(config.tuyaDevices),
       getDriver,
@@ -23,11 +37,13 @@ switch (command) {
       console.error(err);
       process.exit(1);
     });
-    break;
-  case "status":
+  });
+
+program
+  .command("status")
+  .description("Print the most recently recorded solar/battery snapshot")
+  .action(() => {
     printStatus();
-    break;
-  default:
-    console.error(`Unknown command: ${command} (expected "run" or "status")`);
-    process.exit(1);
-}
+  });
+
+program.parse();

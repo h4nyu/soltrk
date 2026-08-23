@@ -22,7 +22,11 @@ adapters), the same shape as the sibling `picomanager` project:
 - **`packages/cli`** - the composition root / app: env var parsing
   (`config.ts`), the vendor registry that wires `NativeAnkerClient` into the
   `BatteryDriver` port (`battery/registry.ts`, analogous to picomanager's
-  `Infrastructure()` factory), and the CLI entrypoint (`index.ts`).
+  `Infrastructure()` factory), and the CLI entrypoint (`index.ts`, a
+  [commander](https://github.com/tj/commander.js)-based `run`/`status` CLI
+  registered as the `soltrk` bin - runnable directly inside the container,
+  e.g. `docker compose exec soltrk soltrk --help`). Only `run` reads
+  Anker/Tuya env vars; `--help`, `--version`, and `status` work without them.
 
 ## How it works
 
@@ -164,7 +168,7 @@ Query current state any time with either:
 
 ```
 cat data/state.json
-docker compose exec soltrk npx tsx packages/cli/src/index.ts status
+docker compose exec soltrk soltrk status
 ```
 
 ## Architecture: adding another battery/charger vendor

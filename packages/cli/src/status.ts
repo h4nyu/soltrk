@@ -1,12 +1,12 @@
 import { readFileSync } from "fs";
-import { config } from "./config";
+import { STATE_FILE_PATH } from "./config";
 
 export function printStatus(): void {
   let raw: string;
   try {
-    raw = readFileSync(config.stateFilePath, "utf-8");
+    raw = readFileSync(STATE_FILE_PATH, "utf-8");
   } catch {
-    console.log(`No state file yet at ${config.stateFilePath} - is "soltrk run" running?`);
+    console.log(`No state file yet at ${STATE_FILE_PATH} - is "soltrk run" running?`);
     return;
   }
   const snapshot = JSON.parse(raw);
