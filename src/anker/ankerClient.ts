@@ -1,19 +1,22 @@
-export interface AnkerStatus {
+import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
+
+interface RawAnkerStatus {
   battery_soc?: number;
   [key: string]: unknown;
 }
 
-export class AnkerClient {
+export class AnkerClient implements BatteryDriver {
   constructor(private readonly baseUrl: string) {}
 
-  async getStatus(sn: string): Promise<AnkerStatus | undefined> {
+  async getStatus(sn: string): Promise<BatteryStatus | undefined> {
     try {
       const res = await fetch(`${this.baseUrl}/devices/${sn}/status`);
       if (!res.ok) {
         console.error(`[anker:${sn}] status ${res.status}`);
         return undefined;
       }
-      return (await res.json()) as AnkerStatus;
+      const raw = (await res.json()) as RawAnkerStatus;
+      return { batterySoc: raw.battery_soc };
     } catch (err) {
       console.error(`[anker:${sn}] status request failed:`, (err as Error).message);
       return undefined;

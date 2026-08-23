@@ -2,14 +2,16 @@ import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { config } from "../config";
 import { SolarSource } from "../tuya/solarSource";
-import { AnkerClient } from "../anker/ankerClient";
+import { getDriver } from "../battery/registry";
 import { allocate } from "./allocator";
+import { readPriority } from "./priority";
 
 interface StateSnapshot {
   timestamp: string;
   totalSolarWatts: number;
   devices: {
     sn: string;
+    name: string | undefined;
     priority: number;
     batterySoc: number | undefined;
     targetWatts: number;
@@ -24,7 +26,6 @@ function writeState(snapshot: StateSnapshot): void {
 
 export async function runLoop(): Promise<void> {
   const solar = new SolarSource(config.tuyaDevices);
-  const anker = new AnkerClient(config.ankerDriverUrl);
   await solar.connect();
 
   const lastSent: Record<string, number> = {};
@@ -36,15 +37,19 @@ export async function runLoop(): Promise<void> {
   process.on("SIGTERM", stop);
 
   while (!stopping) {
+    const priorityEntries = readPriority(config.defaultPriority);
+    const prioritySns = priorityEntries.map((e) => e.sn);
+    const nameBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.name]));
+    const vendorBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.vendor ?? "anker"]));
     const totalWatts = solar.getTotalWatts();
 
     const socBySn: Record<string, number | undefined> = {};
-    for (const sn of config.ankerPrioritySns) {
-      const status = await anker.getStatus(sn);
-      socBySn[sn] = status?.battery_soc as number | undefined;
+    for (const sn of prioritySns) {
+      const status = await getDriver(vendorBySn[sn]).getStatus(sn);
+      socBySn[sn] = status?.batterySoc;
     }
 
-    const targets = allocate(config.ankerPrioritySns, socBySn, totalWatts, {
+    const targets = allocate(prioritySns, socBySn, totalWatts, {
       min: config.chargeLimitMin,
       max: config.chargeLimitMax,
       step: config.chargeLimitStep,
@@ -56,15 +61,16 @@ export async function runLoop(): Promise<void> {
     }
 
     const deviceStates: StateSnapshot["devices"] = [];
-    for (const [i, sn] of config.ankerPrioritySns.entries()) {
+    for (const [i, sn] of prioritySns.entries()) {
       const target = targets[sn];
       let ok: boolean | undefined;
       if (lastSent[sn] !== target) {
-        ok = await anker.setChargeLimit(sn, target);
+        ok = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target);
         if (ok) lastSent[sn] = target;
       }
       deviceStates.push({
         sn,
+        name: nameBySn[sn],
         priority: i + 1,
         batterySoc: socBySn[sn],
         targetWatts: target,
@@ -80,7 +86,9 @@ export async function runLoop(): Promise<void> {
 
     console.log(
       `[loop] solar=${totalWatts}W ` +
-        deviceStates.map((d) => `${d.sn}:soc=${d.batterySoc ?? "?"}%,target=${d.targetWatts}W`).join(" "),
+        deviceStates
+          .map((d) => `${d.name ?? d.sn}:soc=${d.batterySoc ?? "?"}%,target=${d.targetWatts}W`)
+          .join(" "),
     );
 
     await new Promise((r) => setTimeout(r, config.pollIntervalMs));

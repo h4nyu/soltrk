@@ -42,10 +42,14 @@ export const config = {
   tuyaDevices: loadTuyaDevices(),
   // Fixed docker-compose service wiring, not meant to be tuned - not read from env.
   ankerDriverUrl: "http://anker-driver:8000",
-  ankerPrioritySns: required("ANKER_PRIORITY_SNS")
+  // Seeds data/priority.json on first run only - after that, the file (with
+  // its per-battery `priority` field) is the live source of truth and can be
+  // edited without restarting (see src/control/priority.ts).
+  defaultPriority: required("ANKER_PRIORITY_SNS")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean),
+    .filter(Boolean)
+    .map((sn, i) => ({ sn, vendor: "anker", priority: i + 1 })),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 15_000),
   chargeLimitMin: 200,
   chargeLimitMax: 1000,
