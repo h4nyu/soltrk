@@ -47,14 +47,17 @@ adapters), the same shape as the sibling `picomanager` project:
   solar watts and picks the highest-priority Anker unit that isn't full yet.
   If there's enough solar to bother (`MIN_SOLAR_TO_CHARGE_WATTS`), that
   unit's charge limit is *ramped up* by `CHARGE_RAMP_STEP_WATTS` (default
-  200W) per cycle from its own currently measured AC input (not from what
-  we last asked for) toward the max (1200W), rather than jumping straight
-  there - real hardware doesn't reliably obey a specific requested wattage
-  (observed drawing 137W against a 100W request), so asking for the max
-  outright when solar is only barely above threshold would mean needlessly
-  drawing far more from the grid than necessary. Basing each step on the
-  real measured input rather than a remembered request is self-correcting:
-  if the device didn't actually respond to last cycle's ask, the next step
+  200W) per cycle from its own currently measured AC input (not from what we
+  last asked for), capped at current solar output (or the hardware max of
+  1200W, whichever is lower) - rather than jumping straight to the cap. Real
+  hardware doesn't reliably obey a specific requested wattage (observed
+  drawing 137W against a 100W request), so asking for the full cap outright
+  when solar is only barely above threshold would mean needlessly drawing
+  far more from the grid than necessary; capping at solar (rather than
+  always ramping toward 1200W) also keeps the ramp from overshooting well
+  past what the panels can actually provide. Basing each step on the real
+  measured input rather than a remembered request is self-correcting: if
+  the device didn't actually respond to last cycle's ask, the next step
   still starts from wherever it really is now. Going back down to the
   minimum is instant, not ramped, the moment solar drops or a different
   unit becomes the active one. Every non-active unit is told to charge at
@@ -91,19 +94,21 @@ Solarbank-2-equivalent, `schedule.py`'s `set_sb2_use_time` - different
 device class, and explicitly marked unimplemented there too).
 
 This is a best-effort control loop built on an unofficial, hand-decoded
-protocol, not a certified zero-export device. Once the active unit's ramp
-has caught up to current solar output, requested draw meets or exceeds
-generation, which keeps backfeed from that point on to "a little extra grid
-draw on top of solar" at worst, never solar pushed out to the grid. The
-exception is the ramp-up window itself (see "How it works" and "Known
-caveats" below): if solar jumps quickly, there are a few minutes where
-requested draw is deliberately below current output, and any of that
-shortfall your house isn't otherwise consuming could be exported. In this
-system's actual scale (two GTB-800 panels, ~660W combined peak), that
-window is short (roughly 3 cycles/minutes to fully ramp from 0 to peak) and
-the unconsumed amount during it small - but this is not a certified
-zero-export guarantee, and skip the disclaimers only if you understand this
-trade-off.
+protocol, minimizing backfeed rather than a certified zero-export
+guarantee. Earlier versions deliberately over-requested (rounding solar up,
+or asking outright for the hardware max) so that requested draw always met
+or exceeded generation - but real hardware doesn't reliably obey a specific
+requested wattage anyway (observed drawing 137W against a 100W request), so
+that "guarantee" was already only as good as the hardware's own precision.
+The current design instead ramps the active unit's request up toward
+current solar output (see "How it works") and accepts that some backfeed is
+possible: during the ramp-up window after a quick solar increase, and
+afterward too, since the poll cycle (1 minute by default) means the system
+only reacts to changes after the fact regardless of how the target wattage
+is computed. At this deployment's scale (two GTB-800 panels, ~660W combined
+peak) any such backfeed is expected to be small and brief - this is a
+deliberate trade-off against needless grid draw, not an oversight, but skip
+the disclaimers only if you understand it.
 
 ## Known caveats
 

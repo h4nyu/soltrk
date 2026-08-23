@@ -39,9 +39,17 @@ describe("allocate", () => {
     assert.deepEqual(result, { [SN1]: 450, [SN2]: 100 });
   });
 
-  test("caps the ramp at max", () => {
+  test("caps the ramp at max when solar exceeds it", () => {
     const result = allocate([SN1, SN2], { [SN1]: 50, [SN2]: 50 }, { [SN1]: 1100 }, 1500, LIMITS);
     assert.deepEqual(result, { [SN1]: 1200, [SN2]: 100 });
+  });
+
+  test("caps the ramp at current solar, not just at max, when solar is well below max", () => {
+    // Without a solar cap, ramping would keep climbing every cycle toward
+    // 1200W regardless of solar - here solar is only 300W, so once the ramp
+    // reaches it the request should hold there, not keep climbing.
+    const result = allocate([SN1, SN2], { [SN1]: 50, [SN2]: 50 }, { [SN1]: 250 }, 300, LIMITS);
+    assert.deepEqual(result, { [SN1]: 300, [SN2]: 100 });
   });
 
   test("resets to min instantly (no ramp) once solar drops, even if it was drawing a lot before", () => {
@@ -60,12 +68,14 @@ describe("allocate", () => {
     assert.deepEqual(result, { [SN1]: 100, [SN2]: 300 });
   });
 
-  test("subtracts houseStandbyWatts before comparing against minToCharge", () => {
+  test("subtracts houseStandbyWatts before comparing against minToCharge and capping the ramp", () => {
     const limits: AllocatorLimits = { ...LIMITS, houseStandbyWatts: 400 };
     const belowThreshold = allocate([SN1], { [SN1]: 50 }, {}, 500, limits);
     assert.deepEqual(belowThreshold, { [SN1]: 100 });
 
+    // availableWatts=600 - houseStandbyWatts=400 -> netWatts=200, which also
+    // caps the ramp (100 + 200 rampStep = 300, but capped down to 200).
     const aboveThreshold = allocate([SN1], { [SN1]: 50 }, {}, 600, limits);
-    assert.deepEqual(aboveThreshold, { [SN1]: 300 });
+    assert.deepEqual(aboveThreshold, { [SN1]: 200 });
   });
 });
