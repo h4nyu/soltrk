@@ -15,9 +15,6 @@ x-env: &env
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
   POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
   MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-150}
-  # Watts to add per cycle while ramping the active unit's charge request up
-  # toward chargeLimitMax, instead of jumping straight there - see README.
-  CHARGE_RAMP_STEP_WATTS: &CHARGE_RAMP_STEP_WATTS ${CHARGE_RAMP_STEP_WATTS:-200}
   # Constant floor on house consumption that's always safely drawn regardless
   # of solar (fridge compressor, routers, etc). 0 unless you know better -
   # only raise it to a value the house never dips below.

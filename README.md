@@ -46,22 +46,16 @@ adapters), the same shape as the sibling `picomanager` project:
 - **Loop**: every `POLL_INTERVAL_MS` (default 1 minute), `soltrk` reads total
   solar watts and picks the highest-priority Anker unit that isn't full yet.
   If there's enough solar to bother (`MIN_SOLAR_TO_CHARGE_WATTS`), that
-  unit's charge limit is *ramped up* by `CHARGE_RAMP_STEP_WATTS` (default
-  200W) per cycle from its own currently measured AC input (not from what we
-  last asked for), capped at current solar output (or the hardware max of
-  1200W, whichever is lower) - rather than jumping straight to the cap. Real
-  hardware doesn't reliably obey a specific requested wattage (observed
-  drawing 137W against a 100W request), so asking for the full cap outright
-  when solar is only barely above threshold would mean needlessly drawing
-  far more from the grid than necessary; capping at solar (rather than
-  always ramping toward 1200W) also keeps the ramp from overshooting well
-  past what the panels can actually provide. Basing each step on the real
-  measured input rather than a remembered request is self-correcting: if
-  the device didn't actually respond to last cycle's ask, the next step
-  still starts from wherever it really is now. Going back down to the
-  minimum is instant, not ramped, the moment solar drops or a different
-  unit becomes the active one. Every non-active unit is told to charge at
-  the hardware's minimum (100W - there's no real "0W/off", see below).
+  unit is asked to charge at the current solar output directly, capped at
+  the hardware max (1200W) - no gradual ramp-up. An earlier version ramped
+  this up gradually instead of jumping straight there, to avoid needlessly
+  over-asking while hardware caught up, but once the request is already
+  capped at actual solar output that gradual step mostly just adds lag
+  without much extra safety - and real solar changes gradually enough on
+  its own (observed: roughly an hour from 0 to peak in the morning) that a
+  software ramp wasn't buying anything. Every non-active unit is told to
+  charge at the hardware's minimum (100W - there's no real "0W/off", see
+  below).
 
 ### Reverse engineering a new command
 
@@ -95,20 +89,19 @@ device class, and explicitly marked unimplemented there too).
 
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, minimizing backfeed rather than a certified zero-export
-guarantee. Earlier versions deliberately over-requested (rounding solar up,
-or asking outright for the hardware max) so that requested draw always met
-or exceeded generation - but real hardware doesn't reliably obey a specific
-requested wattage anyway (observed drawing 137W against a 100W request), so
-that "guarantee" was already only as good as the hardware's own precision.
-The current design instead ramps the active unit's request up toward
-current solar output (see "How it works") and accepts that some backfeed is
-possible: during the ramp-up window after a quick solar increase, and
-afterward too, since the poll cycle (1 minute by default) means the system
-only reacts to changes after the fact regardless of how the target wattage
-is computed. At this deployment's scale (two GTB-800 panels, ~660W combined
-peak) any such backfeed is expected to be small and brief - this is a
-deliberate trade-off against needless grid draw, not an oversight, but skip
-the disclaimers only if you understand it.
+guarantee. An earlier version deliberately over-requested (rounding solar
+up, or asking outright for the hardware max) so that requested draw always
+met or exceeded generation - but real hardware doesn't reliably obey a
+specific requested wattage anyway (observed drawing 137W against a 100W
+request), so that "guarantee" was already only as good as the hardware's
+own precision. The current design instead asks for exactly the current
+solar output (see "How it works") and accepts that some backfeed is
+possible, since the poll cycle (1 minute by default) means the system only
+reacts to solar changes after the fact regardless of how the target
+wattage is computed. At this deployment's scale (two GTB-800 panels, ~660W
+combined peak) any such backfeed is expected to be small and brief - this
+is a deliberate trade-off against needless grid draw, not an oversight, but
+skip the disclaimers only if you understand it.
 
 ## Known caveats
 

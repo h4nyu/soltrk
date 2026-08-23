@@ -37,11 +37,6 @@ export function loadConfig() {
     // setting).
     chargeLimitMin: 100,
     chargeLimitMax: 1200,
-    // How much the active device's requested wattage increases per cycle
-    // while ramping toward chargeLimitMax (see control/allocator.ts) -
-    // independent of pollIntervalMs, so changing the poll interval doesn't
-    // silently change how aggressively this ramps.
-    chargeRampStepWatts: Number(process.env.CHARGE_RAMP_STEP_WATTS ?? 200),
     // Below this, we don't ask any device to charge at all (avoids 100W-floor
     // grid-draw noise from tiny dawn/dusk solar trickle).
     minSolarToChargeWatts: Number(process.env.MIN_SOLAR_TO_CHARGE_WATTS ?? 150),

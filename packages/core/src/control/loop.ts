@@ -27,7 +27,6 @@ export type LoopDeps = {
   pollIntervalMs: number;
   chargeLimitMin: number;
   chargeLimitMax: number;
-  chargeRampStepWatts: number;
   minSolarToChargeWatts: number;
   houseStandbyWatts: number;
   stateFilePath: string;
@@ -63,16 +62,12 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const socBySn = Object.fromEntries(
       Object.entries(statusBySn).map(([sn, s]) => [sn, s?.batterySoc]),
     );
-    const acInputBySn = Object.fromEntries(
-      Object.entries(statusBySn).map(([sn, s]) => [sn, s?.acInputWatts]),
-    );
 
-    const targets = allocate(prioritySns, socBySn, acInputBySn, totalWatts, {
+    const targets = allocate(prioritySns, socBySn, totalWatts, {
       min: deps.chargeLimitMin,
       max: deps.chargeLimitMax,
       minToCharge: deps.minSolarToChargeWatts,
       houseStandbyWatts: deps.houseStandbyWatts,
-      rampStepWatts: deps.chargeRampStepWatts,
     });
 
     const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
