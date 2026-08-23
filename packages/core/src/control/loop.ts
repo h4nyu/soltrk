@@ -8,6 +8,12 @@ import { PriorityEntry, readPriority } from "./priority";
 type StateSnapshot = {
   timestamp: string;
   totalSolarWatts: number;
+  // Sum of every battery's measured AC input this cycle.
+  totalAcInputWatts: number;
+  // The balance the whole system steers toward zero: solar generation minus
+  // total battery AC input. Positive = unconsumed solar (potential export),
+  // negative = drawing that much from the grid on top of solar.
+  balanceWatts: number;
   devices: {
     sn: string;
     name: string | undefined;
@@ -62,8 +68,11 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const socBySn = Object.fromEntries(
       Object.entries(statusBySn).map(([sn, s]) => [sn, s?.batterySoc]),
     );
+    const acInputBySn = Object.fromEntries(
+      Object.entries(statusBySn).map(([sn, s]) => [sn, s?.acInputWatts]),
+    );
 
-    const targets = allocate(prioritySns, socBySn, totalWatts, {
+    const { watts: targets, acOn } = allocate(prioritySns, socBySn, acInputBySn, totalWatts, {
       min: deps.chargeLimitMin,
       max: deps.chargeLimitMax,
       minToCharge: deps.minSolarToChargeWatts,
@@ -71,10 +80,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     });
 
     const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
-    if (
-      netWatts >= deps.minSolarToChargeWatts &&
-      Object.values(targets).every((w) => w === deps.chargeLimitMin)
-    ) {
+    if (netWatts >= deps.minSolarToChargeWatts && Object.values(acOn).every((on) => !on)) {
       console.warn(`[loop] ${totalWatts}W solar available but every Anker unit is full or unreachable`);
     }
 
@@ -86,7 +92,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       // depend on live SOC even when the requested wattage itself doesn't
       // change, so skipping unchanged-looking calls would make that check
       // silently stop running.
-      const ok = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target);
+      const ok = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, acOn[sn]);
       deviceStates.push({
         sn,
         name: nameBySn[sn],
@@ -99,14 +105,19 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       });
     }
 
+    const totalAcInputWatts = deviceStates.reduce((sum, d) => sum + (d.acInputWatts ?? 0), 0);
+    const balanceWatts = totalWatts - totalAcInputWatts;
+
     writeState(deps.stateFilePath, {
       timestamp: new Date().toISOString(),
       totalSolarWatts: totalWatts,
+      totalAcInputWatts,
+      balanceWatts,
       devices: deviceStates,
     });
 
     console.log(
-      `[loop] solar=${totalWatts}W ` +
+      `[loop] solar=${totalWatts}W input=${totalAcInputWatts}W balance=${balanceWatts >= 0 ? "+" : ""}${balanceWatts}W ` +
         deviceStates
           .map((d) => `${d.name ?? d.sn}:soc=${d.batterySoc ?? "?"}%,target=${d.targetWatts}W`)
           .join(" "),

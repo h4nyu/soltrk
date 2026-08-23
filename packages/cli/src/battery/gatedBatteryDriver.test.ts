@@ -58,6 +58,42 @@ describe("GatedBatteryDriver", () => {
     assert.deepEqual(inner.calls, [{ sn: OTHER_SN, watts: 500 }]);
   });
 
+  test("follows an explicit acOn=true even at idle wattage (full-battery passthrough)", async () => {
+    const inner = fakeInner(100);
+    const gate = fakeGate();
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
+
+    const ok = await driver.setChargeLimit(GATED_SN, OFF_WATTS, true);
+
+    assert.equal(ok, true);
+    assert.deepEqual(gate.calls, [true]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS }]);
+  });
+
+  test("follows an explicit acOn=false even at a high wattage", async () => {
+    const inner = fakeInner(50);
+    const gate = fakeGate();
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
+
+    const ok = await driver.setChargeLimit(GATED_SN, 500, false);
+
+    assert.equal(ok, true);
+    assert.deepEqual(gate.calls, [false]);
+    assert.deepEqual(inner.calls, []);
+  });
+
   test("cuts the plug and skips the wattage command at/below offWatts", async () => {
     const inner = fakeInner(50);
     const gate = fakeGate();

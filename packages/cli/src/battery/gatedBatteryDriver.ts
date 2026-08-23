@@ -20,15 +20,12 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * can wrap every Anker device and only the ones with a
  * TUYA_PLUG_*_GATES_SN entry actually get gated.
  *
- * `offWatts` should match the allocator's `chargeLimitMin` - the exact
- * value deprioritized devices are always sent (see
- * @soltrk/core/control/allocator.ts) - so the gate opens only for the one
- * device actually chosen to charge this cycle. This assumes the active
- * device is never itself assigned exactly `offWatts`: the allocator ramps
- * it up from its own current measured AC input plus a positive step, so
- * this only breaks if that current input happens to already be within one
- * ramp step of `offWatts` from below while the step itself is unusually
- * small - not the case with the default step size.
+ * The plug follows the allocator's `acOn` decision (active charging target,
+ * or full-with-solar passthrough - see @soltrk/core/control/allocator.ts).
+ * When `acOn` isn't provided (a caller not using the allocator), it falls
+ * back to inferring from the wattage: on only when more than `offWatts`
+ * (the allocator's `chargeLimitMin`, what deprioritized devices are sent)
+ * was requested.
  *
  * Safety override: unlike a plain "anker" device, a gated one can be cut off
  * from AC entirely (no solar, deprioritized) with nothing to stop its own
@@ -42,9 +39,9 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * critical line would flip the plug on/off every single poll cycle.
  * This state is tracked per sn in `forcedSns`, since the decision depends on
  * *why* the gate was opened last time (forced vs. normal priority), not just
- * the current wattage in isolation - and this method must be called every
- * cycle regardless of whether the requested wattage changed (see loop.ts)
- * for the check to actually run.
+ * the current request in isolation - and this method must be called every
+ * cycle regardless of whether the request changed (see loop.ts) for the
+ * check to actually run.
  */
 export class GatedBatteryDriver implements BatteryDriver {
   private readonly forcedSns = new Set<string>();
@@ -61,7 +58,7 @@ export class GatedBatteryDriver implements BatteryDriver {
     return this.inner.getStatus(sn);
   }
 
-  async setChargeLimit(sn: string, watts: number): Promise<boolean> {
+  async setChargeLimit(sn: string, watts: number, acOn?: boolean): Promise<boolean> {
     const plug = this.plugsBySn.get(sn);
     if (!plug) return this.inner.setChargeLimit(sn, watts);
 
@@ -78,9 +75,9 @@ export class GatedBatteryDriver implements BatteryDriver {
       console.warn(`[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/priority (releases at ${this.recoverySocPercent}%)`);
     }
 
-    const shouldCharge = critical || watts > this.offWatts;
-    if (!(await plug.setOn(shouldCharge))) return false;
-    if (!shouldCharge) return true;
+    const gateOn = critical || (acOn ?? watts > this.offWatts);
+    if (!(await plug.setOn(gateOn))) return false;
+    if (!gateOn) return true;
     return this.inner.setChargeLimit(sn, watts);
   }
 }
