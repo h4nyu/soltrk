@@ -26,7 +26,6 @@ program
     runLoop({
       solar: TuyaSolarSource({ configs: config.tuyaDevices }),
       getDriver,
-      defaultPriority: config.defaultPriority,
       pollIntervalMs: config.pollIntervalMs,
       chargeLimitMin: config.chargeLimitMin,
       chargeLimitMax: config.chargeLimitMax,

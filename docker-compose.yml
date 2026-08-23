@@ -2,8 +2,6 @@ x-env: &env
   # required
   ANKER_EMAIL: &ANKER_EMAIL ${ANKER_EMAIL}
   ANKER_PASSWORD: &ANKER_PASSWORD ${ANKER_PASSWORD}
-  # Priority order for sequential charging, highest priority first (comma-separated serials).
-  ANKER_PRIORITY_SNS: &ANKER_PRIORITY_SNS ${ANKER_PRIORITY_SNS}
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
@@ -30,7 +28,11 @@ x-env: &env
   # data/tuya.json (git-ignored, see README "One-time setup"), since those
   # values change often enough (adding a plug, re-linking a device) that
   # numbered env vars plus docker-compose's shell-escaping footguns for
-  # keys containing `$` were worse than a plain JSON file.
+  # keys containing `$` were worse than a plain JSON file. Same reasoning
+  # for the battery priority order: it lives directly in data/priority.json
+  # (see README) rather than being seeded from an env var - the file was
+  # already the live source of truth, so requiring an env var too, forever,
+  # just for a one-time seed was redundant.
 
 services:
   soltrk:

@@ -4,7 +4,7 @@ import { SolarSource } from "../solar/SolarSource";
 import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
 import { Result } from "../result";
 import { allocate } from "./allocator";
-import { PriorityEntry, readPriority } from "./priority";
+import { readPriority } from "./priority";
 
 export type StateSnapshot = {
   timestamp: string;
@@ -39,7 +39,6 @@ export type CycleRecorder = (snapshot: StateSnapshot) => void;
 export type LoopDeps = {
   solar: SolarSource;
   getDriver: (vendor: string) => BatteryDriver;
-  defaultPriority: PriorityEntry[];
   pollIntervalMs: number;
   chargeLimitMin: number;
   chargeLimitMax: number;
@@ -66,7 +65,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
   process.on("SIGTERM", stop);
 
   while (!stopping) {
-    const priorityEntries = readPriority(deps.defaultPriority);
+    const priorityEntries = readPriority();
     const prioritySns = priorityEntries.map((e) => e.sn);
     const nameBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.name]));
     const vendorBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.vendor ?? "anker"]));

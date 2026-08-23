@@ -21,14 +21,6 @@ export function loadConfig() {
     ankerEmail: required("ANKER_EMAIL"),
     ankerPassword: required("ANKER_PASSWORD"),
     ankerCountry: process.env.ANKER_COUNTRY ?? "JP",
-    // Seeds data/priority.json on first run only - after that, the file (with
-    // its per-battery `priority` field) is the live source of truth and can
-    // be edited without restarting (see @soltrk/core's control/priority.ts).
-    defaultPriority: required("ANKER_PRIORITY_SNS")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((sn, i) => ({ sn, vendor: "anker", priority: i + 1 })),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 60_000),
     // Matches the Anker app's own "交流電池充電" slider range (100-1200W) -
     // values outside this range get silently clamped by the device firmware
