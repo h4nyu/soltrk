@@ -1,0 +1,18 @@
+services:
+  anker-driver:
+    build: ./anker-driver
+    env_file: .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  soltrk:
+    build: .
+    env_file: .env
+    environment:
+      ANKER_DRIVER_URL: http://anker-driver:8000
+    depends_on:
+      - anker-driver
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
