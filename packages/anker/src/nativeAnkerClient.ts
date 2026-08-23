@@ -5,6 +5,11 @@ import { encodeRealtimeTrigger, encodeSetChargeLimit } from "./protocol";
 
 const REALTIME_TRIGGER_TIMEOUT_SEC = 300;
 const REALTIME_TRIGGER_RENEW_MS = 240_000;
+// Deliberately long: Anker locks the account after a few failed sign-in
+// attempts in a short window (observed: "disabled for 9 minutes" after
+// rapid restarts, and a longer-lived "26161 Failed to request" throttle
+// beyond that), so retrying fast makes an outage worse, not better.
+const INIT_RETRY_MS = 15 * 60_000;
 // Only A1765 (SOLIX C1000X Gen 2) has a decoder wired up (see protocol.ts) -
 // other models would need their own parseXParamInfo before being usable here.
 const SUPPORTED_MODELS = new Set(["A1765"]);
@@ -19,13 +24,31 @@ const SUPPORTED_MODELS = new Set(["A1765"]);
 export class NativeAnkerClient implements BatteryDriver {
   private mqttSession?: AnkerMqttSession;
   private devicesBySn = new Map<string, AnkerDevice>();
-  private readonly ready: Promise<void>;
+  // Flips true once init eventually succeeds; until then getStatus/
+  // setChargeLimit just report "not available" instead of awaiting a
+  // promise (awaiting would stall the whole control loop for however many
+  // 15-minute retry rounds a login outage lasts).
+  private initialized = false;
 
   constructor(email: string, password: string, country: string) {
-    this.ready = this.init(email, password, country).catch((err) => {
-      console.error("[anker] initialization failed:", (err as Error).message);
-      throw err;
-    });
+    void this.initWithRetry(email, password, country);
+  }
+
+  private async initWithRetry(email: string, password: string, country: string): Promise<void> {
+    for (;;) {
+      try {
+        await this.init(email, password, country);
+        this.initialized = true;
+        console.log("[anker] initialized");
+        return;
+      } catch (err) {
+        console.error(
+          `[anker] initialization failed (retrying in ${INIT_RETRY_MS / 60_000} min):`,
+          (err as Error).message,
+        );
+        await new Promise((r) => setTimeout(r, INIT_RETRY_MS));
+      }
+    }
   }
 
   private async init(email: string, password: string, country: string): Promise<void> {
@@ -60,11 +83,7 @@ export class NativeAnkerClient implements BatteryDriver {
   }
 
   async getStatus(sn: string): Promise<BatteryStatus | undefined> {
-    try {
-      await this.ready;
-    } catch {
-      return undefined;
-    }
+    if (!this.initialized) return undefined;
     const status = this.mqttSession?.getStatus(sn);
     return status
       ? {
@@ -77,11 +96,7 @@ export class NativeAnkerClient implements BatteryDriver {
   }
 
   async setChargeLimit(sn: string, watts: number): Promise<boolean> {
-    try {
-      await this.ready;
-    } catch {
-      return false;
-    }
+    if (!this.initialized) return false;
     const device = this.devicesBySn.get(sn);
     if (!device || !this.mqttSession) {
       console.error(`[anker:${sn}] unknown device or MQTT session not ready`);
