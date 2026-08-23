@@ -89,8 +89,9 @@ export class NativeAnkerClient implements BatteryDriver {
     }
     try {
       // watts=0 is the "stop charging" signal for deprioritized devices,
-      // confirmed against the Anker app's displayed setting on real
-      // hardware, same as every other 100W step (see README).
+      // but this alone doesn't guarantee it stops on real hardware: the
+      // device's own TOU schedule is a separate layer that can keep
+      // charging from AC regardless of what's requested here (see README).
       await this.mqttSession.publishCommand(device, encodeSetChargeLimit(watts));
       return true;
     } catch (err) {
