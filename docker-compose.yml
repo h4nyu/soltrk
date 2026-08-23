@@ -34,6 +34,11 @@ x-env: &env
   TUYA_PLUG_1_IP: &TUYA_PLUG_1_IP ${TUYA_PLUG_1_IP:-}
   TUYA_PLUG_1_GATES_SN: &TUYA_PLUG_1_GATES_SN ${TUYA_PLUG_1_GATES_SN:-}
   TUYA_PLUG_1_SWITCH_DP: &TUYA_PLUG_1_SWITCH_DP ${TUYA_PLUG_1_SWITCH_DP:-1}
+  TUYA_PLUG_2_ID: &TUYA_PLUG_2_ID ${TUYA_PLUG_2_ID:-}
+  TUYA_PLUG_2_KEY: &TUYA_PLUG_2_KEY ${TUYA_PLUG_2_KEY:-}
+  TUYA_PLUG_2_IP: &TUYA_PLUG_2_IP ${TUYA_PLUG_2_IP:-}
+  TUYA_PLUG_2_GATES_SN: &TUYA_PLUG_2_GATES_SN ${TUYA_PLUG_2_GATES_SN:-}
+  TUYA_PLUG_2_SWITCH_DP: &TUYA_PLUG_2_SWITCH_DP ${TUYA_PLUG_2_SWITCH_DP:-1}
   # Below this SOC, a gated device charges at minimum rate regardless of
   # solar/priority - the AC cutoff must never fully drain a battery powering
   # something that can't lose power (e.g. an actual refrigerator).
