@@ -20,7 +20,12 @@ const driverFactories: Record<string, () => BatteryDriver> = {
   // gatedBatteryDriver.ts.
   "anker-gated": () => {
     const config = loadConfig();
-    return new GatedBatteryDriver(getDriver("anker"), gatesBySn(loadTuyaPlugs()), config.chargeLimitMin);
+    return new GatedBatteryDriver(
+      getDriver("anker"),
+      gatesBySn(loadTuyaPlugs()),
+      config.chargeLimitMin,
+      config.gatedCriticalSocPercent,
+    );
   },
 };
 

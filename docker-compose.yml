@@ -34,6 +34,10 @@ x-env: &env
   TUYA_PLUG_1_IP: &TUYA_PLUG_1_IP ${TUYA_PLUG_1_IP:-}
   TUYA_PLUG_1_GATES_SN: &TUYA_PLUG_1_GATES_SN ${TUYA_PLUG_1_GATES_SN:-}
   TUYA_PLUG_1_SWITCH_DP: &TUYA_PLUG_1_SWITCH_DP ${TUYA_PLUG_1_SWITCH_DP:-1}
+  # Below this SOC, a gated device charges at minimum rate regardless of
+  # solar/priority - the AC cutoff must never fully drain a battery powering
+  # something that can't lose power (e.g. an actual refrigerator).
+  GATED_CRITICAL_SOC_PERCENT: &GATED_CRITICAL_SOC_PERCENT ${GATED_CRITICAL_SOC_PERCENT:-6}
 
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path

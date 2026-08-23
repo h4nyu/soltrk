@@ -259,6 +259,19 @@ control) whenever it's the active charging target - any sn with no
 `TUYA_PLUG_*_GATES_SN` entry is unaffected and behaves exactly like plain
 `"anker"`.
 
+**Safety floor:** a gated device can be cut off from AC for hours at a
+time (no solar, deprioritized) with nothing else stopping its own battery
+from draining down to zero while it keeps powering whatever it's actually
+plugged into (e.g. a real refrigerator). Below `GATED_CRITICAL_SOC_PERCENT`
+(default 6%), `GatedBatteryDriver` opens the gate and charges at whatever
+wattage it's given (normally the hardware's own minimum) regardless of
+solar availability or priority order - this overrides everything else.
+
+Confirmed live: with 冷蔵庫's TOU schedule set to "オフピーク" (which would
+otherwise keep charging from AC no matter what wattage is requested - see
+"Known caveats"), restarting with the gate in place correctly cut AC and
+`acInputWatts` in `data/state.json` dropped from ~198W to 0.
+
 ## Architecture: adding another battery/charger vendor
 
 `packages/core`'s control loop and allocator never talk to

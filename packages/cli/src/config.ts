@@ -47,6 +47,12 @@ export function loadConfig() {
     // margin. 0 (default/safe) if unknown; only raise this to a value you're
     // confident the house never dips below.
     houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 0),
+    // Below this SOC, a gated device (see GatedBatteryDriver) is charged at
+    // its minimum rate regardless of solar availability or priority - the
+    // physical AC cutoff must never be allowed to fully drain a battery
+    // that's powering something that can't just lose power (e.g. an actual
+    // refrigerator).
+    gatedCriticalSocPercent: Number(process.env.GATED_CRITICAL_SOC_PERCENT ?? 6),
     stateFilePath: STATE_FILE_PATH,
   };
 }

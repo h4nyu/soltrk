@@ -28,12 +28,20 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * because `minSolarToChargeWatts` (150W) exceeds `chargeLimitStep` (100W);
  * lowering minSolarToChargeWatts below chargeLimitStep would break that
  * assumption.
+ *
+ * Safety override: unlike a plain "anker" device, a gated one can be cut off
+ * from AC entirely (no solar, deprioritized) with nothing to stop its own
+ * battery draining down to zero powering whatever it's plugged into (e.g.
+ * an actual refrigerator) - so below `criticalSocPercent`, the gate opens
+ * and charges at whatever wattage was requested (normally `offWatts`, i.e.
+ * the hardware's own minimum) regardless of solar availability or priority.
  */
 export class GatedBatteryDriver implements BatteryDriver {
   constructor(
     private readonly inner: BatteryDriver,
     private readonly plugsBySn: Map<string, PowerGate>,
     private readonly offWatts: number,
+    private readonly criticalSocPercent: number,
   ) {}
 
   getStatus(sn: string): Promise<BatteryStatus | undefined> {
@@ -44,7 +52,13 @@ export class GatedBatteryDriver implements BatteryDriver {
     const plug = this.plugsBySn.get(sn);
     if (!plug) return this.inner.setChargeLimit(sn, watts);
 
-    const shouldCharge = watts > this.offWatts;
+    const status = await this.inner.getStatus(sn);
+    const critical = status?.batterySoc !== undefined && status.batterySoc <= this.criticalSocPercent;
+    if (critical) {
+      console.warn(`[gated:${sn}] SOC ${status?.batterySoc}% at/below ${this.criticalSocPercent}% floor - forcing AC on regardless of solar/priority`);
+    }
+
+    const shouldCharge = critical || watts > this.offWatts;
     if (!(await plug.setOn(shouldCharge))) return false;
     if (!shouldCharge) return true;
     return this.inner.setChargeLimit(sn, watts);
