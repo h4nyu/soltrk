@@ -54,9 +54,11 @@ export async function runLoop(): Promise<void> {
       max: config.chargeLimitMax,
       step: config.chargeLimitStep,
       minToCharge: config.minSolarToChargeWatts,
+      houseStandbyWatts: config.houseStandbyWatts,
     });
 
-    if (totalWatts >= config.minSolarToChargeWatts && Object.values(targets).every((w) => w === 0)) {
+    const netWatts = Math.max(0, totalWatts - config.houseStandbyWatts);
+    if (netWatts >= config.minSolarToChargeWatts && Object.values(targets).every((w) => w === 0)) {
       console.warn(`[loop] ${totalWatts}W solar available but every Anker unit is full or unreachable`);
     }
 

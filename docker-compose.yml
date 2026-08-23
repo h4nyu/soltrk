@@ -17,6 +17,10 @@ x-env: &env
   ANKER_DEVICE_SNS: &ANKER_DEVICE_SNS ${ANKER_DEVICE_SNS:-}
   POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-15000}
   MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-150}
+  # Constant floor on house consumption that's always safely drawn regardless
+  # of solar (fridge compressor, routers, etc). 0 unless you know better -
+  # only raise it to a value the house never dips below.
+  HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
   TUYA_DEVICE_1_NAME: &TUYA_DEVICE_1_NAME ${TUYA_DEVICE_1_NAME:-gtb800-1}
   TUYA_DEVICE_2_NAME: &TUYA_DEVICE_2_NAME ${TUYA_DEVICE_2_NAME:-gtb800-2}
   # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx src/tuya/discover.ts <id> <key> <ip>`.
@@ -24,6 +28,7 @@ x-env: &env
   TUYA_DEVICE_1_POWER_SCALE: &TUYA_DEVICE_1_POWER_SCALE ${TUYA_DEVICE_1_POWER_SCALE:-10}
   TUYA_DEVICE_2_POWER_DP: &TUYA_DEVICE_2_POWER_DP ${TUYA_DEVICE_2_POWER_DP:-19}
   TUYA_DEVICE_2_POWER_SCALE: &TUYA_DEVICE_2_POWER_SCALE ${TUYA_DEVICE_2_POWER_SCALE:-10}
+  LOG_LEVEL: &LOG_LEVEL ${LOG_LEVEL:-INFO}
 
   # No "internal" tier here: ANKER_DRIVER_URL and the state file path are
   # fixed implementation details (docker-compose service DNS name, and the
@@ -38,6 +43,7 @@ services:
       ANKER_PASSWORD: *ANKER_PASSWORD
       ANKER_COUNTRY: *ANKER_COUNTRY
       ANKER_DEVICE_SNS: *ANKER_DEVICE_SNS
+      LOG_LEVEL: *LOG_LEVEL
     ports:
       - "8000:8000"
     volumes:

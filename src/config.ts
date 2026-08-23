@@ -57,6 +57,12 @@ export const config = {
   // Below this, we don't ask any device to charge at all (avoids 100W-floor
   // grid-draw noise from tiny dawn/dusk solar trickle).
   minSolarToChargeWatts: Number(process.env.MIN_SOLAR_TO_CHARGE_WATTS ?? 150),
+  // Constant floor on house consumption (fridge compressor, routers, etc.)
+  // that's safe to assume is always drawn regardless of solar - that much of
+  // solar output never needs covering by the charger's ceil-rounding margin.
+  // 0 (default/safe) if unknown; only raise this to a value you're confident
+  // the house never dips below.
+  houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 0),
   // Fixed to match the ./data volume mount in docker-compose.yml - not read from env.
   stateFilePath: "./data/state.json",
 };
