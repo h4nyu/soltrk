@@ -11,10 +11,13 @@ export type AllocatorLimits = {
 /**
  * Sequential priority charging: all available solar watts (net of the
  * guaranteed house standby load) go to the highest priority device that
- * isn't full yet (SOC < 100%); every other device gets an explicit 0 so it
- * doesn't also trickle-charge from the grid in parallel. A device with
- * unknown SOC (status read failed) is skipped, not assumed full or empty, so
- * we don't get stuck stalling behind an unreachable unit.
+ * isn't full yet (SOC < 100%); every other device gets `limits.min` - the
+ * lowest charge rate the hardware supports - since real Anker hardware has
+ * no true "0W/off" via this command (below-minimum requests just get
+ * clamped up to it by the firmware, see README), so asking for anything
+ * lower than the floor would be meaningless. A device with unknown SOC
+ * (status read failed) is skipped, not assumed full or empty, so we don't
+ * get stuck stalling behind an unreachable unit.
  */
 export function allocate(
   prioritySns: string[],
@@ -23,7 +26,7 @@ export function allocate(
   limits: AllocatorLimits,
 ): Record<string, number> {
   const result: Record<string, number> = {};
-  for (const sn of prioritySns) result[sn] = 0;
+  for (const sn of prioritySns) result[sn] = limits.min;
 
   const netWatts = Math.max(0, availableWatts - limits.houseStandbyWatts);
   if (netWatts < limits.minToCharge) return result;

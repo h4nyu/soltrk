@@ -46,8 +46,9 @@ adapters), the same shape as the sibling `picomanager` project:
 - **Loop**: every `POLL_INTERVAL_MS`, `soltrk` reads total solar watts, picks
   the highest-priority Anker unit that isn't full yet, and sets its charge
   limit to the solar wattage rounded *up* to the next 100W step. Every other
-  unit is told to stop (`0W`) so it doesn't also trickle-charge from the grid
-  in parallel.
+  unit is told to charge at the hardware's minimum (100W - there's no real
+  "0W/off", see below), so it never gets left at a stale higher limit from
+  when it was previously the active unit.
 
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, not a certified zero-export device. The charger is deliberately
@@ -59,7 +60,7 @@ out to the grid - but skip the disclaimers if you already know this.
 
 ## Known caveats
 
-- **200W floor, rounds up**: below ~200W of solar (e.g. dawn/dusk), the
+- **100W floor, rounds up**: below ~100W of solar (e.g. dawn/dusk), the
   charger can't be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS`
   (default 150W) is the cutoff below which we stop trying and just let panel
   output do whatever it does; above that, and up through every 100W step, the
