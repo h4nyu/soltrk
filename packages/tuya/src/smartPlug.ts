@@ -20,6 +20,14 @@ export class SmartPlug {
       ip: this.config.ip,
       version: "3.3",
     });
+    // Without a listener, tuyapi's async "error" events (e.g. a timeout
+    // emitted outside the awaited connect()/set() promise chain) are
+    // *unhandled* EventEmitter errors and crash the whole process -
+    // observed live killing the loop. The awaited calls below still reject
+    // on failure; this listener just keeps out-of-band errors non-fatal.
+    client.on("error", (err) => {
+      console.error(`[tuya-plug:${this.config.id}] error:`, err.message);
+    });
     try {
       await client.connect();
       await client.set({ dps: this.config.switchDp, set: on });
