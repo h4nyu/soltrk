@@ -171,11 +171,30 @@ this requires `network_mode: host` (already set in `docker-compose.yml`;
 requires Docker Desktop's host networking support to be enabled under
 Settings > Resources > Network).
 
+Create a git-ignored `data/tuya.json` (same `./data` volume mount as
+`state.json`/`priority.json` - it holds secrets, hence `data/` and not
+`.env`/`docker-compose.yml`, where numbered env vars plus shell-escaping
+for keys containing `$` got painful once there were several devices):
+
+```json
+{
+  "devices": [
+    { "name": "gtb800-1", "id": "...", "key": "..." },
+    { "name": "gtb800-2", "id": "...", "key": "..." }
+  ],
+  "plugs": []
+}
+```
+
+`name` is optional (defaults to `gtb800-N`); `plugs` is for step 6 below
+and can start empty/omitted.
+
 ### 2. Confirm the power dp code and scale
 
 The GTB-800's exact Tuya dp schema isn't published, so don't trust the
-`TUYA_DEVICE_*_POWER_DP`/`_POWER_SCALE` defaults in `docker-compose.yml`
-blindly. After building once (`docker compose build soltrk`), run:
+`powerDp`/`powerScale` defaults (`"19"`/`10`) blindly - add `"powerDp"` /
+`"powerScale"` fields to a device's entry in `data/tuya.json` to override
+them. After building once (`docker compose build soltrk`), run:
 
 ```
 docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
@@ -187,13 +206,13 @@ raw watts or needs dividing (commonly by 10) to get watts.
 
 ### 3. Anker account + device serials
 
-All env vars are declared in the `x-env` block at the top of
-`docker-compose.yml` (required ones as bare `${VAR}`, optional ones with a
-`${VAR:-default}` fallback) - that file is the source of truth for what
-exists and its default, not a separate `.env.example`. Create a git-ignored
-`.env` next to it with at least the required keys (`ANKER_EMAIL`,
-`ANKER_PASSWORD`, `ANKER_PRIORITY_SNS`, `TUYA_DEVICE_1_*`,
-`TUYA_DEVICE_2_*`).
+Anker credentials and the priority seed are still plain env vars (they
+don't change often and aren't secrets-heavy the way Tuya's numbered keys
+were) - declared in the `x-env` block at the top of `docker-compose.yml`
+(required ones as bare `${VAR}`, optional ones with a `${VAR:-default}`
+fallback), which is the source of truth for what exists and its default,
+not a separate `.env.example`. Create a git-ignored `.env` next to it with
+at least `ANKER_EMAIL`, `ANKER_PASSWORD`, and `ANKER_PRIORITY_SNS`.
 
 To find your device serials, log in once via a throwaway script, e.g.:
 
@@ -267,21 +286,20 @@ docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
 ```
 
 `"1"` is the standard boolean on/off dp for most Tuya plugs and is the
-default if `TUYA_PLUG_*_SWITCH_DP` is unset. Then add to `.env`:
+default if a plug entry omits `"switchDp"`. Then add to `data/tuya.json`'s
+`"plugs"` array:
 
-```
-TUYA_PLUG_1_ID=...
-TUYA_PLUG_1_KEY=...
-TUYA_PLUG_1_GATES_SN=APCDLRG0G06401641   # the battery this plug's output feeds
+```json
+{ "id": "...", "key": "...", "gatesSn": "APCDLRG0G06401641" }
 ```
 
-and set that battery's `vendor` to `"anker-gated"` in `data/priority.json`
-(step 4). `GatedBatteryDriver` (`packages/cli/src/battery/gatedBatteryDriver.ts`)
+(`gatesSn` is the battery this plug's output feeds), and set that
+battery's `vendor` to `"anker-gated"` in `data/priority.json` (step 4).
+`GatedBatteryDriver` (`packages/cli/src/battery/gatedBatteryDriver.ts`)
 then cuts the plug whenever the allocator deprioritizes that battery, and
 restores it (plus still sending the normal wattage command for fine
 control) whenever it's the active charging target - any sn with no
-`TUYA_PLUG_*_GATES_SN` entry is unaffected and behaves exactly like plain
-`"anker"`.
+matching plug entry is unaffected and behaves exactly like plain `"anker"`.
 
 **Safety floor:** a gated device can be cut off from AC for hours at a
 time (no solar, deprioritized) with nothing else stopping its own battery
