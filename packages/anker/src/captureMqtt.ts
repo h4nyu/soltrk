@@ -27,13 +27,25 @@ async function main() {
   }
 
   const session = await login(email, password, country);
+  if (session instanceof Error) {
+    console.error("login failed:", session.message);
+    process.exit(1);
+  }
   const devices = await getBindDevices(session);
+  if (devices instanceof Error) {
+    console.error("getBindDevices failed:", devices.message);
+    process.exit(1);
+  }
   const device = devices.find((d) => d.device_sn === targetSn);
   if (!device) {
     console.error(`No bound device with sn ${targetSn} (have: ${devices.map((d) => d.device_sn).join(", ")})`);
     process.exit(1);
   }
   const mqttInfo = await getUserMqttInfo(session);
+  if (mqttInfo instanceof Error) {
+    console.error("getUserMqttInfo failed:", mqttInfo.message);
+    process.exit(1);
+  }
 
   const client = mqtt.connect(`mqtts://${mqttInfo.endpoint_addr}:8883`, {
     cert: mqttInfo.certificate_pem,
