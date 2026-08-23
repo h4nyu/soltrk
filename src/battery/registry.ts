@@ -1,11 +1,12 @@
+import { BatteryDriver } from "@soltrk/core";
+import { NativeAnkerClient } from "@soltrk/anker";
 import { config } from "../config";
-import { AnkerClient } from "../anker/ankerClient";
-import { BatteryDriver } from "./BatteryDriver";
 
-// Add a new vendor by writing one BatteryDriver adapter and registering it
-// here - the control loop and allocator never branch on vendor.
+// Add a new vendor by writing one BatteryDriver adapter (implementing the
+// @soltrk/core port) and registering it here - the control loop and
+// allocator never branch on vendor.
 const drivers: Record<string, BatteryDriver> = {
-  anker: new AnkerClient(config.ankerDriverUrl),
+  anker: new NativeAnkerClient(config.ankerEmail, config.ankerPassword, config.ankerCountry),
 };
 
 export function getDriver(vendor: string): BatteryDriver {

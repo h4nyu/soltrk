@@ -1,4 +1,4 @@
-export interface AllocatorLimits {
+export type AllocatorLimits = {
   min: number;
   max: number;
   step: number;
@@ -6,7 +6,7 @@ export interface AllocatorLimits {
   // Constant floor on house consumption that's safe to assume is always
   // drawn - that much of solar never needs covering by the charger.
   houseStandbyWatts: number;
-}
+};
 
 /**
  * Sequential priority charging: all available solar watts (net of the

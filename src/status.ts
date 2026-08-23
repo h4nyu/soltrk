@@ -14,7 +14,8 @@ export function printStatus(): void {
   console.log(`solar: ${snapshot.totalSolarWatts} W`);
   for (const d of snapshot.devices) {
     console.log(
-      `  #${d.priority} ${d.name ?? d.sn} (${d.sn})  soc=${d.batterySoc ?? "unknown"}%  target=${d.targetWatts}W` +
+      `  #${d.priority} ${d.name ?? d.sn} (${d.sn})  soc=${d.batterySoc ?? "unknown"}%  ` +
+        `in=${d.acInputWatts ?? "?"}W out=${d.acOutputWatts ?? "?"}W  target=${d.targetWatts}W` +
         (d.lastCommandOk === false ? "  (last command FAILED)" : ""),
     );
   }

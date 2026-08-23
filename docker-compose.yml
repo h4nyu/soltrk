@@ -13,8 +13,6 @@ x-env: &env
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
-  # Comma-separated serials to expose from anker-driver; empty = auto-register every bound PPS-family device.
-  ANKER_DEVICE_SNS: &ANKER_DEVICE_SNS ${ANKER_DEVICE_SNS:-}
   POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-15000}
   MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-150}
   # Constant floor on house consumption that's always safely drawn regardless
@@ -23,40 +21,25 @@ x-env: &env
   HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
   TUYA_DEVICE_1_NAME: &TUYA_DEVICE_1_NAME ${TUYA_DEVICE_1_NAME:-gtb800-1}
   TUYA_DEVICE_2_NAME: &TUYA_DEVICE_2_NAME ${TUYA_DEVICE_2_NAME:-gtb800-2}
-  # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx src/tuya/discover.ts <id> <key> <ip>`.
+  # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>`.
   TUYA_DEVICE_1_POWER_DP: &TUYA_DEVICE_1_POWER_DP ${TUYA_DEVICE_1_POWER_DP:-19}
   TUYA_DEVICE_1_POWER_SCALE: &TUYA_DEVICE_1_POWER_SCALE ${TUYA_DEVICE_1_POWER_SCALE:-10}
   TUYA_DEVICE_2_POWER_DP: &TUYA_DEVICE_2_POWER_DP ${TUYA_DEVICE_2_POWER_DP:-19}
   TUYA_DEVICE_2_POWER_SCALE: &TUYA_DEVICE_2_POWER_SCALE ${TUYA_DEVICE_2_POWER_SCALE:-10}
-  LOG_LEVEL: &LOG_LEVEL ${LOG_LEVEL:-INFO}
 
-  # No "internal" tier here: ANKER_DRIVER_URL and the state file path are
-  # fixed implementation details (docker-compose service DNS name, and the
-  # path matching the ./data volume mount) - they're hardcoded directly in
-  # src/config.ts instead of being threaded through as env vars.
+  # No "internal" tier here: the Anker cloud API base URL and the state file
+  # path are fixed implementation details (a constant endpoint, and a path
+  # matching the ./data volume mount) - they're hardcoded directly in
+  # src/config.ts / packages/anker/src/httpApi.ts instead of being threaded
+  # through as env vars.
 
 services:
-  anker-driver:
-    build: ./anker-driver
-    environment:
-      ANKER_EMAIL: *ANKER_EMAIL
-      ANKER_PASSWORD: *ANKER_PASSWORD
-      ANKER_COUNTRY: *ANKER_COUNTRY
-      ANKER_DEVICE_SNS: *ANKER_DEVICE_SNS
-      LOG_LEVEL: *LOG_LEVEL
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./anker-driver/app.py:/app/app.py
-    restart: unless-stopped
-
   soltrk:
     build: .
     environment:
       <<: *env
-    depends_on:
-      - anker-driver
     volumes:
       - ./data:/app/data
       - ./src:/app/src
+      - ./packages:/app/packages
     restart: unless-stopped

@@ -1,12 +1,11 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
-import { config } from "../config";
-import { SolarSource } from "../tuya/solarSource";
-import { getDriver } from "../battery/registry";
+import { SolarSource } from "../solar/SolarSource";
+import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
 import { allocate } from "./allocator";
-import { readPriority } from "./priority";
+import { PriorityEntry, readPriority } from "./priority";
 
-interface StateSnapshot {
+type StateSnapshot = {
   timestamp: string;
   totalSolarWatts: number;
   devices: {
@@ -14,18 +13,33 @@ interface StateSnapshot {
     name: string | undefined;
     priority: number;
     batterySoc: number | undefined;
+    acInputWatts: number | undefined;
+    acOutputWatts: number | undefined;
     targetWatts: number;
     lastCommandOk: boolean | undefined;
   }[];
+};
+
+export type LoopDeps = {
+  solar: SolarSource;
+  getDriver: (vendor: string) => BatteryDriver;
+  defaultPriority: PriorityEntry[];
+  pollIntervalMs: number;
+  chargeLimitMin: number;
+  chargeLimitMax: number;
+  chargeLimitStep: number;
+  minSolarToChargeWatts: number;
+  houseStandbyWatts: number;
+  stateFilePath: string;
+};
+
+function writeState(stateFilePath: string, snapshot: StateSnapshot): void {
+  mkdirSync(dirname(stateFilePath), { recursive: true });
+  writeFileSync(stateFilePath, JSON.stringify(snapshot, null, 2));
 }
 
-function writeState(snapshot: StateSnapshot): void {
-  mkdirSync(dirname(config.stateFilePath), { recursive: true });
-  writeFileSync(config.stateFilePath, JSON.stringify(snapshot, null, 2));
-}
-
-export async function runLoop(): Promise<void> {
-  const solar = new SolarSource(config.tuyaDevices);
+export async function runLoop(deps: LoopDeps): Promise<void> {
+  const { solar, getDriver } = deps;
   await solar.connect();
 
   const lastSent: Record<string, number> = {};
@@ -37,28 +51,30 @@ export async function runLoop(): Promise<void> {
   process.on("SIGTERM", stop);
 
   while (!stopping) {
-    const priorityEntries = readPriority(config.defaultPriority);
+    const priorityEntries = readPriority(deps.defaultPriority);
     const prioritySns = priorityEntries.map((e) => e.sn);
     const nameBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.name]));
     const vendorBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.vendor ?? "anker"]));
     const totalWatts = solar.getTotalWatts();
 
-    const socBySn: Record<string, number | undefined> = {};
+    const statusBySn: Record<string, BatteryStatus | undefined> = {};
     for (const sn of prioritySns) {
-      const status = await getDriver(vendorBySn[sn]).getStatus(sn);
-      socBySn[sn] = status?.batterySoc;
+      statusBySn[sn] = await getDriver(vendorBySn[sn]).getStatus(sn);
     }
+    const socBySn = Object.fromEntries(
+      Object.entries(statusBySn).map(([sn, s]) => [sn, s?.batterySoc]),
+    );
 
     const targets = allocate(prioritySns, socBySn, totalWatts, {
-      min: config.chargeLimitMin,
-      max: config.chargeLimitMax,
-      step: config.chargeLimitStep,
-      minToCharge: config.minSolarToChargeWatts,
-      houseStandbyWatts: config.houseStandbyWatts,
+      min: deps.chargeLimitMin,
+      max: deps.chargeLimitMax,
+      step: deps.chargeLimitStep,
+      minToCharge: deps.minSolarToChargeWatts,
+      houseStandbyWatts: deps.houseStandbyWatts,
     });
 
-    const netWatts = Math.max(0, totalWatts - config.houseStandbyWatts);
-    if (netWatts >= config.minSolarToChargeWatts && Object.values(targets).every((w) => w === 0)) {
+    const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
+    if (netWatts >= deps.minSolarToChargeWatts && Object.values(targets).every((w) => w === 0)) {
       console.warn(`[loop] ${totalWatts}W solar available but every Anker unit is full or unreachable`);
     }
 
@@ -74,13 +90,15 @@ export async function runLoop(): Promise<void> {
         sn,
         name: nameBySn[sn],
         priority: i + 1,
-        batterySoc: socBySn[sn],
+        batterySoc: statusBySn[sn]?.batterySoc,
+        acInputWatts: statusBySn[sn]?.acInputWatts,
+        acOutputWatts: statusBySn[sn]?.acOutputWatts,
         targetWatts: target,
         lastCommandOk: ok,
       });
     }
 
-    writeState({
+    writeState(deps.stateFilePath, {
       timestamp: new Date().toISOString(),
       totalSolarWatts: totalWatts,
       devices: deviceStates,
@@ -93,7 +111,7 @@ export async function runLoop(): Promise<void> {
           .join(" "),
     );
 
-    await new Promise((r) => setTimeout(r, config.pollIntervalMs));
+    await new Promise((r) => setTimeout(r, deps.pollIntervalMs));
   }
 
   solar.disconnect();

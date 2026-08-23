@@ -5,28 +5,53 @@ the grid by routing their output into up to N Anker SOLIX portable power
 stations, charged one at a time in a configured priority order (unit fills to
 100% SOC, then the next unit takes over).
 
+## Layout
+
+An npm workspaces monorepo, split by layer (ports/business logic vs.
+adapters), the same shape as the sibling `picomanager` project:
+
+- **`packages/core`** - the vendor-neutral domain: the `BatteryDriver` and
+  `SolarSource` ports, the priority allocator, and the control loop
+  (`runLoop`). Depends on nothing but its own ports - it never imports Anker
+  or Tuya code directly.
+- **`packages/anker`** - the one `BatteryDriver` adapter today
+  (`NativeAnkerClient`): Anker cloud login, AWS IoT MQTT session, and the
+  hand-reverse-engineered A1765 wire format. See "How it works" below.
+- **`packages/tuya`** - the one `SolarSource` adapter today: reads the two
+  GTB-800 microinverters over the Tuya *local* protocol (no cloud).
+- **`src/`** - the composition root / app: env var parsing (`config.ts`),
+  the vendor registry that wires `NativeAnkerClient` into the `BatteryDriver`
+  port (`battery/registry.ts`, analogous to picomanager's `Infrastructure()`
+  factory), and the CLI entrypoint (`index.ts`).
+
 ## How it works
 
 - **Solar reading**: `soltrk` talks to the two GTB-800 units directly over
   the Tuya *local* protocol (no cloud) and sums their instantaneous power.
-- **Anker control**: the C1000(X) has no local API. `anker-driver` (Python)
-  wraps the community-reverse-engineered
-  [`anker-solix-api`](https://github.com/thomluther/anker-solix-api) MQTT
-  session to read battery SOC and set the AC charge limit (200-1000W, 100W
-  steps - this is an Anker-imposed range, not something we invented).
+- **Anker control**: the C1000X Gen 2 (A1765, sold as "SOLIX C1000 Plus" in
+  the app) has no local API and no support in the community
+  [`anker-solix-api`](https://github.com/thomluther/anker-solix-api) project
+  either (its generic MQTT decoder and command-encoder both return nothing
+  for this model). `packages/anker` is a from-scratch TypeScript client: it
+  logs into Anker's cloud (reverse engineered ECDH+AES login, see
+  `packages/anker/src/crypto.ts`), opens the same AWS IoT MQTT session the
+  app uses, and reads/writes the A1765 wire format directly
+  (`packages/anker/src/protocol.ts`) - reverse engineered by hand and
+  cross-validated against the Anker app's own displayed values on real
+  hardware (see the tests alongside it).
 - **Loop**: every `POLL_INTERVAL_MS`, `soltrk` reads total solar watts, picks
   the highest-priority Anker unit that isn't full yet, and sets its charge
   limit to the solar wattage rounded *up* to the next 100W step. Every other
   unit is told to stop (`0W`) so it doesn't also trickle-charge from the grid
   in parallel.
 
-This is a best-effort control loop built on an unofficial protocol, not a
-certified zero-export device. The charger is deliberately commanded to draw
-*at least* current solar output (never less): total load then always meets
-or exceeds solar generation, which guarantees no backfeed regardless of what
-the rest of the house is doing - it can only ever mean pulling a little extra
-from the grid on top of solar, never push solar power out to the grid - but
-skip the disclaimers if you already know this.
+This is a best-effort control loop built on an unofficial, hand-decoded
+protocol, not a certified zero-export device. The charger is deliberately
+commanded to draw *at least* current solar output (never less): total load
+then always meets or exceeds solar generation, which guarantees no backfeed
+regardless of what the rest of the house is doing - it can only ever mean
+pulling a little extra from the grid on top of solar, never push solar power
+out to the grid - but skip the disclaimers if you already know this.
 
 ## Known caveats
 
@@ -42,13 +67,20 @@ skip the disclaimers if you already know this.
   - that much of solar is treated as already spoken for and doesn't need
   covering by the charger, shrinking the overshoot. Leave at `0` (default) if
   unsure; setting it too high is what could actually cause backfeed.
-- **`0W` = "stop charging" is unverified.** The library documents 200-1000W
-  from the app UI, but not what setting `0` does on real hardware. Test once
-  manually (watch `docker compose logs -f soltrk` and the unit's own display)
-  before trusting the "deprioritized units stay idle" behavior.
-- **Unofficial protocol.** `anker-solix-api`'s MQTT support can change or
-  break with Anker app/firmware updates; keep an eye on that project's
-  releases.
+- **`0W` = "stop charging" is unverified.** 100W/200W/300W have all been
+  confirmed against the Anker app's own displayed setting on real hardware,
+  but `0`'s effect specifically hasn't been tested. Test it once manually
+  (watch `docker compose logs -f soltrk` and the unit's own display) before
+  trusting the "deprioritized units stay idle" behavior.
+- **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
+  Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
+  no upstream reference for this model's wire format at all, read or write,
+  so it was reverse engineered directly from captured MQTT traffic. A
+  different Anker PPS model would need its own field mapping - the
+  byte-level TLV framing is likely the same (see `parseTlvFields`), but the
+  per-message-type field meanings (tags like `a5`/`a6`/`a4`) are not
+  guaranteed to match. Anker app/firmware updates could also change this at
+  any time with no changelog to watch.
 
 ## One-time setup
 
@@ -66,7 +98,7 @@ The GTB-800's exact Tuya dp schema isn't published, so don't trust the
 blindly. After building once (`docker compose build soltrk`), run:
 
 ```
-docker compose run --rm soltrk npx tsx src/tuya/discover.ts <id> <key> <ip>
+docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>
 ```
 
 Watch which `dp` code moves in sync with the panel's actual instantaneous
@@ -77,20 +109,30 @@ raw watts or needs dividing (commonly by 10) to get watts.
 
 All env vars are declared in the `x-env` block at the top of
 `docker-compose.yml` (required ones as bare `${VAR}`, optional ones with a
-`${VAR:-default}` fallback, and internal service-wiring values hardcoded) -
-that file is the source of truth for what exists and its default, not a
-separate `.env.example`. Create a git-ignored `.env` next to it with at least
-the required keys (`ANKER_EMAIL`, `ANKER_PASSWORD`, `ANKER_PRIORITY_SNS`,
-`TUYA_DEVICE_1_*`, `TUYA_DEVICE_2_*`), then start just the driver and list
-devices to get serials:
+`${VAR:-default}` fallback) - that file is the source of truth for what
+exists and its default, not a separate `.env.example`. Create a git-ignored
+`.env` next to it with at least the required keys (`ANKER_EMAIL`,
+`ANKER_PASSWORD`, `ANKER_PRIORITY_SNS`, `TUYA_DEVICE_1_*`,
+`TUYA_DEVICE_2_*`).
+
+To find your device serials, log in once via a throwaway script, e.g.:
 
 ```
-docker compose up -d anker-driver
-curl http://localhost:8000/devices
+docker compose run --rm soltrk npx tsx -e "
+  import('@soltrk/anker').then(async (m) => {
+    const s = await m.login(process.env.ANKER_EMAIL!, process.env.ANKER_PASSWORD!, process.env.ANKER_COUNTRY ?? 'JP');
+    console.log(await m.getBindDevices(s));
+  });
+"
 ```
 
 `ANKER_PRIORITY_SNS` only seeds the *initial* priority order (see below) -
 list the serials there in the order you want them charged.
+
+**Note:** the Anker cloud allows only one active login per account at a
+time - running this (or `soltrk` itself) will log the phone app out of that
+account. It can just log back in; the two don't fight over it once both are
+logged in independently.
 
 ### 4. Priority order (`data/priority.json`)
 
@@ -127,36 +169,43 @@ docker compose exec soltrk npx tsx src/index.ts status
 
 ## Architecture: adding another battery/charger vendor
 
-The control loop and allocator never talk to `AnkerClient` directly - they
-depend only on the `BatteryDriver` port (`src/battery/BatteryDriver.ts`):
+`packages/core`'s control loop and allocator never talk to
+`NativeAnkerClient` directly - they depend only on the `BatteryDriver` port
+(`packages/core/src/battery/BatteryDriver.ts`):
 
 ```ts
-interface BatteryDriver {
-  getStatus(sn: string): Promise<{ batterySoc?: number } | undefined>;
+type BatteryDriver = {
+  getStatus(sn: string): Promise<BatteryStatus | undefined>;
   setChargeLimit(sn: string, watts: number): Promise<boolean>;
-}
+};
 ```
 
-`AnkerClient` is the one adapter implementing it today (talking to the
-separate Python `anker-driver` service, since that's where the only working
-reverse-engineered protocol lib lives - a vendor adapter is free to be a
-thin HTTP client, a driver process of its own, or call a library directly,
-whatever that vendor needs). To add a second brand: write a new class
-implementing `BatteryDriver`, register it in `src/battery/registry.ts`
-under a vendor key, and tag that battery's `data/priority.json` entry with
-`"vendor": "<your key>"`. No changes needed in `loop.ts` or `allocator.ts`.
+`NativeAnkerClient` (`packages/anker`) is the one adapter implementing it
+today. To add a second brand: create a new `packages/<vendor>` implementing
+`BatteryDriver` (depending on `@soltrk/core` for the port type, nothing
+else), register an instance of it in `src/battery/registry.ts` under a
+vendor key, and tag that battery's `data/priority.json` entry with
+`"vendor": "<your key>"`. No changes needed in `packages/core`. The same
+pattern applies to solar sources via the `SolarSource` port if you ever add
+a second panel/inverter integration.
 
 ## Development
 
-`./src` (soltrk) and `./anker-driver/app.py` are bind-mounted into their
-containers, and both run with auto-reload (`tsx watch`, `uvicorn --reload`).
-Edit and save - no `docker compose build` needed. A rebuild is only required
-after changing `package.json`/`requirements.txt` (i.e. dependencies) or a
-`Dockerfile`.
+`./src` and `./packages` are bind-mounted into the container and it runs
+with auto-reload (`tsx watch`). Edit and save - no `docker compose build`
+needed. A rebuild is only required after changing a `package.json`
+(workspace or dependency changes) or the `Dockerfile`.
 
-Run the anker-driver decoder regression tests (real captured payloads, see
-`anker-driver/test_app.py`) with:
+TypeScript compiles as a single program from the root `tsconfig.json`
+(`include: ["src", "packages/*/src"]`) rather than per-package builds -
+npm workspaces here is purely for dependency/import-boundary clarity
+(`@soltrk/core`, `@soltrk/anker`, `@soltrk/tuya`), not independent
+compilation.
+
+Run the test suite (crypto cross-validated against the Python reference
+implementation with a fixed key, protocol encode/decode against real
+captured payloads - see `packages/anker/src/*.test.ts`) with:
 
 ```
-docker compose build anker-driver && docker run --rm soltrk-anker-driver pytest -v
+docker compose run --rm --no-deps soltrk npm test
 ```

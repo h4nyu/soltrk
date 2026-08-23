@@ -1,9 +1,9 @@
 /**
  * One-off helper to dump every dp (data point) a Tuya device reports, so you
  * can identify which dp code is instantaneous power and what scale it uses
- * before wiring it into config.ts. Run inside the container:
+ * before wiring it into .env. Run inside the container:
  *
- *   docker compose run --rm soltrk node dist/tuya/discover.js <id> <key> <ip>
+ *   docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>
  */
 import TuyAPI from "tuyapi";
 
