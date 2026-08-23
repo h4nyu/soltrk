@@ -13,7 +13,7 @@ x-env: &env
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
-  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-15000}
+  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
   MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-150}
   # Constant floor on house consumption that's always safely drawn regardless
   # of solar (fridge compressor, routers, etc). 0 unless you know better -
@@ -39,6 +39,11 @@ x-env: &env
   TUYA_PLUG_2_IP: &TUYA_PLUG_2_IP ${TUYA_PLUG_2_IP:-}
   TUYA_PLUG_2_GATES_SN: &TUYA_PLUG_2_GATES_SN ${TUYA_PLUG_2_GATES_SN:-}
   TUYA_PLUG_2_SWITCH_DP: &TUYA_PLUG_2_SWITCH_DP ${TUYA_PLUG_2_SWITCH_DP:-1}
+  TUYA_PLUG_3_ID: &TUYA_PLUG_3_ID ${TUYA_PLUG_3_ID:-}
+  TUYA_PLUG_3_KEY: &TUYA_PLUG_3_KEY ${TUYA_PLUG_3_KEY:-}
+  TUYA_PLUG_3_IP: &TUYA_PLUG_3_IP ${TUYA_PLUG_3_IP:-}
+  TUYA_PLUG_3_GATES_SN: &TUYA_PLUG_3_GATES_SN ${TUYA_PLUG_3_GATES_SN:-}
+  TUYA_PLUG_3_SWITCH_DP: &TUYA_PLUG_3_SWITCH_DP ${TUYA_PLUG_3_SWITCH_DP:-1}
   # Below this SOC, a gated device charges at minimum rate regardless of
   # solar/priority - the AC cutoff must never fully drain a battery powering
   # something that can't lose power (e.g. an actual refrigerator).

@@ -29,7 +29,6 @@ program
       pollIntervalMs: config.pollIntervalMs,
       chargeLimitMin: config.chargeLimitMin,
       chargeLimitMax: config.chargeLimitMax,
-      chargeLimitStep: config.chargeLimitStep,
       minSolarToChargeWatts: config.minSolarToChargeWatts,
       houseStandbyWatts: config.houseStandbyWatts,
       stateFilePath: config.stateFilePath,

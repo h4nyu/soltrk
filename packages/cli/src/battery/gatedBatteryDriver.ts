@@ -24,10 +24,11 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * value deprioritized devices are always sent (see
  * @soltrk/core/control/allocator.ts) - so the gate opens only for the one
  * device actually chosen to charge this cycle. This assumes the active
- * device is never itself assigned exactly `offWatts`, which holds today
- * because `minSolarToChargeWatts` (150W) exceeds `chargeLimitStep` (100W);
- * lowering minSolarToChargeWatts below chargeLimitStep would break that
- * assumption.
+ * device is never itself assigned exactly `offWatts`: the allocator ramps
+ * it up from its own current measured AC input plus a positive step, so
+ * this only breaks if that current input happens to already be within one
+ * ramp step of `offWatts` from below while the step itself is unusually
+ * small - not the case with the default step size.
  *
  * Safety override: unlike a plain "anker" device, a gated one can be cut off
  * from AC entirely (no solar, deprioritized) with nothing to stop its own

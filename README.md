@@ -43,12 +43,19 @@ adapters), the same shape as the sibling `picomanager` project:
   (`packages/anker/src/protocol.ts`) - reverse engineered by hand and
   cross-validated against the Anker app's own displayed values on real
   hardware (see the tests alongside it).
-- **Loop**: every `POLL_INTERVAL_MS`, `soltrk` reads total solar watts, picks
-  the highest-priority Anker unit that isn't full yet, and sets its charge
-  limit to the solar wattage rounded *up* to the next 100W step. Every other
-  unit is told to charge at the hardware's minimum (100W - there's no real
-  "0W/off", see below), so it never gets left at a stale higher limit from
-  when it was previously the active unit.
+- **Loop**: every `POLL_INTERVAL_MS` (default 1 minute), `soltrk` reads total
+  solar watts and picks the highest-priority Anker unit that isn't full yet.
+  If there's enough solar to bother (`MIN_SOLAR_TO_CHARGE_WATTS`), that
+  unit is asked to charge at the current solar output directly, capped at
+  the hardware max (1200W) - no gradual ramp-up. An earlier version ramped
+  this up gradually instead of jumping straight there, to avoid needlessly
+  over-asking while hardware caught up, but once the request is already
+  capped at actual solar output that gradual step mostly just adds lag
+  without much extra safety - and real solar changes gradually enough on
+  its own (observed: roughly an hour from 0 to peak in the morning) that a
+  software ramp wasn't buying anything. Every non-active unit is told to
+  charge at the hardware's minimum (100W - there's no real "0W/off", see
+  below).
 
 ### Reverse engineering a new command
 
@@ -81,52 +88,58 @@ Solarbank-2-equivalent, `schedule.py`'s `set_sb2_use_time` - different
 device class, and explicitly marked unimplemented there too).
 
 This is a best-effort control loop built on an unofficial, hand-decoded
-protocol, not a certified zero-export device. The charger is deliberately
-commanded to draw *at least* current solar output (never less): total load
-then always meets or exceeds solar generation, which guarantees no backfeed
-regardless of what the rest of the house is doing - it can only ever mean
-pulling a little extra from the grid on top of solar, never push solar power
-out to the grid - but skip the disclaimers if you already know this.
+protocol, minimizing backfeed rather than a certified zero-export
+guarantee. An earlier version deliberately over-requested (rounding solar
+up, or asking outright for the hardware max) so that requested draw always
+met or exceeded generation - but real hardware doesn't reliably obey a
+specific requested wattage anyway (observed drawing 137W against a 100W
+request), so that "guarantee" was already only as good as the hardware's
+own precision. The current design instead asks for exactly the current
+solar output (see "How it works") and accepts that some backfeed is
+possible, since the poll cycle (1 minute by default) means the system only
+reacts to solar changes after the fact regardless of how the target
+wattage is computed. At this deployment's scale (two GTB-800 panels, ~660W
+combined peak) any such backfeed is expected to be small and brief - this
+is a deliberate trade-off against needless grid draw, not an oversight, but
+skip the disclaimers only if you understand it.
 
 ## Known caveats
 
-- **100W floor, rounds up**: below ~100W of solar (e.g. dawn/dusk), the
-  charger can't be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS`
-  (default 150W) is the cutoff below which we stop trying and just let panel
-  output do whatever it does; above that, and up through every 100W step, the
-  target is rounded up (not down) so the charger always draws at least as
-  much as solar is currently producing - the small overshoot (up to 99W) is
-  extra grid draw, which is the deliberate trade-off for the backfeed
-  guarantee above. If you know a constant amount of house load is always
+- **100W floor**: below ~100W of solar (e.g. dawn/dusk), the charger can't
+  be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS` (default 150W) is
+  the cutoff below which we stop trying and just let panel output do
+  whatever it does. If you know a constant amount of house load is always
   present (fridge compressor, routers, etc), set `HOUSE_STANDBY_WATTS` to it
   - that much of solar is treated as already spoken for and doesn't need
-  covering by the charger, shrinking the overshoot. Leave at `0` (default) if
-  unsure; setting it too high is what could actually cause backfeed.
-- **`setChargeLimit` cannot fully stop charging by itself.** 100-1200W in
-  100W steps all work as expected, confirmed against the Anker app's own
-  displayed "交流電池充電" setting on real hardware, but that setting has no
-  "0" - values below 100W get silently clamped up to the 100W floor by the
-  device firmware rather than rejected (`chargeLimitMin`/`Max` in
+  covering by the charger. Leave at `0` (default) if unsure; setting it too
+  high is what could actually cause backfeed.
+- **The requested wattage is a rough dial, not a precise one.** Real
+  hardware doesn't reliably obey a specific requested wattage - a 100W
+  request was observed drawing 137W on real hardware, while a battery
+  already at 100% SOC (see below). Because of this, `soltrk` no longer tries
+  to compute an exact wattage matching solar output; it just ramps the
+  active unit's request up toward the max and lets the device's own charge
+  controller decide the real draw (see "How it works").
+- **`setChargeLimit` cannot fully stop charging by itself, regardless of
+  mode.** 100-1200W all work as expected, confirmed against the Anker app's
+  own displayed "交流電池充電" setting on real hardware, but that setting has
+  no "0" - values below 100W get silently clamped up to the 100W floor by
+  the device firmware rather than rejected (`chargeLimitMin`/`Max` in
   `config.ts` are set to the app's real 100-1200W range for this reason).
-  Worse, on real hardware even a valid low wattage request was fully
-  ignored whenever the device's own **TOU (Time of Use) schedule** was in
-  its "オフピーク" period, which always charges from AC regardless of any
-  wattage soltrk requests - soltrk's charge-limit command and the device's
-  own TOU schedule are two independent layers, and TOU wins. For a
-  deprioritized unit's charging to actually stop, its TOU schedule must be
-  in "ピーク" (battery-priority, falls back to grid only once empty - no
-  charging) or "ミッドピーク" (grid pass-through, no charging) for that
-  time period, set manually in the Anker app - soltrk has no known command
-  to read or change a device's TOU schedule. This also means: if a unit's
-  TOU schedule is "ピーク"/"ミッドピーク" all day, soltrk's own charge
-  commands when solar *is* available may be blocked the same way - not yet
-  confirmed either way in daylight. Dynamic TOU control from soltrk itself
-  isn't possible either: the schedule-change command was reverse engineered
-  (`encodeSetTouSchedule` in `protocol.ts`) but replaying it directly over
-  MQTT doesn't take effect, because the real write goes through an
-  unidentified Anker cloud HTTP endpoint, not the MQTT message alone (see
-  "Reverse engineering a new command" below). The practical workaround is
-  the physical smart-plug AC cutoff described in "One-time setup" step 6.
+  Worse, on real hardware a 100W request was observed still drawing 137W -
+  and this was seen with the unit already in **標準モード (Standard mode)**,
+  not just under a TOU (Time of Use) "オフピーク" schedule as originally
+  suspected - so this isn't a TOU-specific quirk, it's a general limit of
+  the wattage command itself, in any mode. Dynamic TOU control from soltrk
+  was also explored and abandoned: the schedule-change command was reverse
+  engineered (`encodeSetTouSchedule` in `protocol.ts`) but replaying it
+  directly over MQTT doesn't take effect, because the real write goes
+  through an unidentified Anker cloud HTTP endpoint, not the MQTT message
+  alone (see "Reverse engineering a new command" below). Since neither the
+  wattage command nor TOU can be driven reliably from software in any mode,
+  the practical fix is the physical smart-plug AC cutoff described in
+  "One-time setup" step 6, which sidesteps this entirely - all 3 of this
+  deployment's units are gated this way and run in 標準モード.
 - **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
   Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
   no upstream reference for this model's wire format at all, read or write,

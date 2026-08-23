@@ -1,7 +1,6 @@
 export type AllocatorLimits = {
   min: number;
   max: number;
-  step: number;
   minToCharge: number;
   // Constant floor on house consumption that's safe to assume is always
   // drawn - that much of solar never needs covering by the charger.
@@ -9,15 +8,29 @@ export type AllocatorLimits = {
 };
 
 /**
- * Sequential priority charging: all available solar watts (net of the
- * guaranteed house standby load) go to the highest priority device that
- * isn't full yet (SOC < 100%); every other device gets `limits.min` - the
- * lowest charge rate the hardware supports - since real Anker hardware has
- * no true "0W/off" via this command (below-minimum requests just get
- * clamped up to it by the firmware, see README), so asking for anything
- * lower than the floor would be meaningless. A device with unknown SOC
- * (status read failed) is skipped, not assumed full or empty, so we don't
- * get stuck stalling behind an unreachable unit.
+ * Sequential priority charging: whenever there's enough solar (net of the
+ * guaranteed house standby load) to bother, the highest priority device
+ * that isn't full yet (SOC < 100%) is asked to charge at the current solar
+ * output, capped at `limits.max`. This used to ramp up gradually instead of
+ * jumping straight there, to avoid needlessly over-asking while hardware
+ * caught up - but capping at solar output already bounds the request to
+ * what's actually available, so the gradual step added lag without much
+ * extra safety once that cap was in place, and real solar changes gradually
+ * enough on its own (see session notes) that a ramp wasn't buying anything.
+ *
+ * Every other device gets `limits.min` - the lowest charge rate the
+ * hardware supports, since real Anker hardware has no true "0W/off" via
+ * this command (below-minimum requests just get clamped up to it by the
+ * firmware, see README). Real hardware doesn't reliably obey a specific
+ * requested wattage either way (observed drawing 137W against a 100W
+ * request) - this is safe against backfeed regardless: over-consumption
+ * only means extra grid draw, not export, and under-consumption (if
+ * hardware draws less than asked) is an accepted, bounded risk rather than
+ * something worth adding an artificial margin to chase, given the poll
+ * cycle itself already means solar changes are only reacted to after the
+ * fact. A device with unknown SOC (status read failed) is skipped, not
+ * assumed full or empty, so we don't get stuck stalling behind an
+ * unreachable unit.
  */
 export function allocate(
   prioritySns: string[],
@@ -37,11 +50,6 @@ export function allocate(
   });
   if (!activeSn) return result;
 
-  // Round UP to the step: the charger must draw at least as much as
-  // netWatts for the "no backfeed" guarantee to hold even if the house is
-  // drawing nothing beyond its guaranteed standby load (flooring could leave
-  // up to `step` watts of solar unconsumed, which would export in that case).
-  const stepped = Math.ceil(netWatts / limits.step) * limits.step;
-  result[activeSn] = Math.min(Math.max(stepped, limits.min), limits.max);
+  result[activeSn] = Math.max(limits.min, Math.min(netWatts, limits.max));
   return result;
 }
