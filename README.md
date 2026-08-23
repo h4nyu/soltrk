@@ -262,10 +262,17 @@ control) whenever it's the active charging target - any sn with no
 **Safety floor:** a gated device can be cut off from AC for hours at a
 time (no solar, deprioritized) with nothing else stopping its own battery
 from draining down to zero while it keeps powering whatever it's actually
-plugged into (e.g. a real refrigerator). Below `GATED_CRITICAL_SOC_PERCENT`
+plugged into (e.g. a real refrigerator). At/below `GATED_CRITICAL_SOC_PERCENT`
 (default 6%), `GatedBatteryDriver` opens the gate and charges at whatever
 wattage it's given (normally the hardware's own minimum) regardless of
-solar availability or priority order - this overrides everything else.
+solar availability or priority order - this overrides everything else. It
+stays forced open until SOC climbs back up to the higher
+`GATED_RECOVERY_SOC_PERCENT` (default 20%), not the same 6% line - without
+that gap, a SOC sitting right at the critical threshold would flip the
+plug on/off every single poll cycle. This means `setChargeLimit` must run
+every cycle even when the requested wattage hasn't changed (the loop no
+longer skips "unchanged" calls, since a gated device's actual decision can
+depend on live SOC alone).
 
 Confirmed live: with 冷蔵庫's TOU schedule set to "オフピーク" (which would
 otherwise keep charging from AC no matter what wattage is requested - see

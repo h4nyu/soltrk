@@ -38,6 +38,9 @@ x-env: &env
   # solar/priority - the AC cutoff must never fully drain a battery powering
   # something that can't lose power (e.g. an actual refrigerator).
   GATED_CRITICAL_SOC_PERCENT: &GATED_CRITICAL_SOC_PERCENT ${GATED_CRITICAL_SOC_PERCENT:-6}
+  # Once forced on above, stays on until SOC reaches this higher threshold -
+  # the gap avoids flipping the plug on/off every cycle near the critical line.
+  GATED_RECOVERY_SOC_PERCENT: &GATED_RECOVERY_SOC_PERCENT ${GATED_RECOVERY_SOC_PERCENT:-20}
 
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path

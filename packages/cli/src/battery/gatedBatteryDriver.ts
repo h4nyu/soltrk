@@ -32,16 +32,28 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * Safety override: unlike a plain "anker" device, a gated one can be cut off
  * from AC entirely (no solar, deprioritized) with nothing to stop its own
  * battery draining down to zero powering whatever it's plugged into (e.g.
- * an actual refrigerator) - so below `criticalSocPercent`, the gate opens
+ * an actual refrigerator) - so at/below `criticalSocPercent`, the gate opens
  * and charges at whatever wattage was requested (normally `offWatts`, i.e.
  * the hardware's own minimum) regardless of solar availability or priority.
+ * It stays forced open until SOC recovers to `recoverySocPercent` (a higher
+ * threshold, not the same one) rather than immediately releasing at
+ * `criticalSocPercent` again - without that gap, a SOC hovering right at the
+ * critical line would flip the plug on/off every single poll cycle.
+ * This state is tracked per sn in `forcedSns`, since the decision depends on
+ * *why* the gate was opened last time (forced vs. normal priority), not just
+ * the current wattage in isolation - and this method must be called every
+ * cycle regardless of whether the requested wattage changed (see loop.ts)
+ * for the check to actually run.
  */
 export class GatedBatteryDriver implements BatteryDriver {
+  private readonly forcedSns = new Set<string>();
+
   constructor(
     private readonly inner: BatteryDriver,
     private readonly plugsBySn: Map<string, PowerGate>,
     private readonly offWatts: number,
     private readonly criticalSocPercent: number,
+    private readonly recoverySocPercent: number,
   ) {}
 
   getStatus(sn: string): Promise<BatteryStatus | undefined> {
@@ -53,9 +65,16 @@ export class GatedBatteryDriver implements BatteryDriver {
     if (!plug) return this.inner.setChargeLimit(sn, watts);
 
     const status = await this.inner.getStatus(sn);
-    const critical = status?.batterySoc !== undefined && status.batterySoc <= this.criticalSocPercent;
+    const soc = status?.batterySoc;
+    if (soc !== undefined) {
+      if (soc <= this.criticalSocPercent) this.forcedSns.add(sn);
+      else if (soc >= this.recoverySocPercent) this.forcedSns.delete(sn);
+      // Between the two thresholds (or if soc is unknown this cycle): leave
+      // whatever forced state was already in effect unchanged.
+    }
+    const critical = this.forcedSns.has(sn);
     if (critical) {
-      console.warn(`[gated:${sn}] SOC ${status?.batterySoc}% at/below ${this.criticalSocPercent}% floor - forcing AC on regardless of solar/priority`);
+      console.warn(`[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/priority (releases at ${this.recoverySocPercent}%)`);
     }
 
     const shouldCharge = critical || watts > this.offWatts;

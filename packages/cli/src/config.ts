@@ -53,6 +53,12 @@ export function loadConfig() {
     // that's powering something that can't just lose power (e.g. an actual
     // refrigerator).
     gatedCriticalSocPercent: Number(process.env.GATED_CRITICAL_SOC_PERCENT ?? 6),
+    // Once forced on by the critical floor above, a gated device keeps
+    // charging until SOC reaches this (higher) threshold before normal
+    // priority/solar-based control resumes - a gap between the two
+    // prevents rapidly flipping the plug on/off if SOC hovers right at the
+    // critical line.
+    gatedRecoverySocPercent: Number(process.env.GATED_RECOVERY_SOC_PERCENT ?? 20),
     stateFilePath: STATE_FILE_PATH,
   };
 }
