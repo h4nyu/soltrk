@@ -23,10 +23,14 @@ COPY packages ./packages
 # Link it now that the real source is in place.
 RUN ln -sf ../../packages/cli/src/index.ts node_modules/.bin/soltrk
 
-# No "watch": this restarts the whole process (including a fresh Anker
-# cloud login) on every source file change, and packages/cli/src is bind-
-# mounted for live dev - editing code while the container is up would
-# otherwise re-trigger Anker's login every single save, which is exactly
-# what tripped its sign-in lockout during one heavy-editing session. Code
-# changes need an explicit `docker compose restart soltrk` to take effect.
-CMD ["npx", "tsx", "packages/cli/src/index.ts", "run"]
+# No CMD: falls back to the base image's default (bare `node`, which exits
+# immediately with no stdin) - this image isn't meant to be run without an
+# explicit command. docker-compose.yml's `app` service (no command, always
+# `run --rm`) is for one-off dev commands (tsc, tests, discover.ts, ...);
+# its `soltrk` service supplies the real `command:` that runs the loop.
+# Deliberately not "watch" (tsx watch restarts the whole process - including
+# a fresh Anker cloud login - on every source file change, and packages/
+# cli/src is bind-mounted for live dev; this tripped Anker's sign-in
+# lockout more than once during one editing session before this was fixed):
+# code changes need an explicit `docker compose restart soltrk` to take
+# effect, never automatic.
