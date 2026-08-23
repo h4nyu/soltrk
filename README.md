@@ -153,3 +153,10 @@ containers, and both run with auto-reload (`tsx watch`, `uvicorn --reload`).
 Edit and save - no `docker compose build` needed. A rebuild is only required
 after changing `package.json`/`requirements.txt` (i.e. dependencies) or a
 `Dockerfile`.
+
+Run the anker-driver decoder regression tests (real captured payloads, see
+`anker-driver/test_app.py`) with:
+
+```
+docker compose build anker-driver && docker run --rm soltrk-anker-driver pytest -v
+```
