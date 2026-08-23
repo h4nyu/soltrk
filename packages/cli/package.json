@@ -4,9 +4,13 @@
   "private": true,
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "soltrk": "src/index.ts"
+  },
   "dependencies": {
     "@soltrk/core": "*",
     "@soltrk/anker": "*",
-    "@soltrk/tuya": "*"
+    "@soltrk/tuya": "*",
+    "commander": "^12.1.0"
   }
 }
