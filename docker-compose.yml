@@ -22,7 +22,7 @@ x-env: &env
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path
   # matching the ./data volume mount) - they're hardcoded directly in
-  # packages/cli/src/config.ts / packages/anker/src/httpApi.ts instead of
+  # packages/cli/src/config.ts / packages/anker/src/http-api.ts instead of
   # being threaded through as env vars. Tuya device/plug config (id, key,
   # powerDp/Scale, switchDp, gatesSn) similarly isn't here - it lives in
   # data/tuya.json (git-ignored, see README "One-time setup"), since those

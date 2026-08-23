@@ -6,10 +6,10 @@
  * what the app itself publishes while you perform the action in it. Run
  * inside the container:
  *
- *   docker compose run --rm soltrk npx tsx packages/anker/src/captureMqtt.ts <device_sn>
+ *   docker compose run --rm soltrk npx tsx packages/anker/src/capture-mqtt.ts <device_sn>
  */
 import mqtt from "mqtt";
-import { login, getBindDevices, getUserMqttInfo, AnkerDevice } from "./httpApi";
+import { login, getBindDevices, getUserMqttInfo, AnkerDevice } from "./http-api";
 
 async function main() {
   const targetSn = process.argv[2];

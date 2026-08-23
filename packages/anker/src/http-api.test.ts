@@ -1,6 +1,6 @@
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
-import { login } from "./httpApi";
+import { login } from "./http-api";
 
 function mockFetchOnce(status: number, body: unknown): void {
   mock.method(globalThis, "fetch", async () => new Response(JSON.stringify(body), { status }));

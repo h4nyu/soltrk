@@ -2,7 +2,7 @@ import { BatteryDriver } from "@soltrk/core";
 import { NativeAnkerClient } from "@soltrk/anker";
 import { loadTuyaPlugs } from "@soltrk/tuya";
 import { loadConfig } from "../config";
-import { GatedBatteryDriver, gatesBySn } from "./gatedBatteryDriver";
+import { GatedBatteryDriver, gatesBySn } from "./gated-battery-driver";
 
 // Add a new vendor by writing one BatteryDriver adapter (implementing the
 // @soltrk/core port) and registering a factory here - the control loop and

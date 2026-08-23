@@ -1,5 +1,5 @@
 import mqtt, { MqttClient } from "mqtt";
-import { AnkerDevice, AnkerMqttInfo, AnkerSession } from "./httpApi";
+import { AnkerDevice, AnkerMqttInfo, AnkerSession } from "./http-api";
 import { A1765Status, parseA1765ParamInfo } from "./protocol";
 
 type OuterMessage = {

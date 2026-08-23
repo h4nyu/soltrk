@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
-import { SolarSource } from "../solar/SolarSource";
-import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
+import { SolarSource } from "../solar/solar-source";
+import { BatteryDriver, BatteryStatus } from "../battery/battery-driver";
 import { Result } from "../result";
 import { allocate } from "./allocator";
 import { readPriority } from "./priority";
