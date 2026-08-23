@@ -44,24 +44,83 @@ class ChargeLimitRequest(BaseModel):
     watts: int
 
 
+def _parse_tlv_fields(data: bytes) -> dict[int, bytes]:
+    """Split an Anker Solix hex payload into {tag_byte: raw_value_bytes}.
+
+    Header is `ff 09 <len_le16> <pattern x3> <msgtype x2> [<increment>]`
+    (see anker_solix_api.mqtttypes.DeviceHexDataHeader); each field after
+    that is `tag(1) length(1) value(length)`, and the final byte of the
+    message is a checksum (not a field).
+    """
+    n = len(data)
+    i = 10 if data[9] not in range(0xA0, 0xAA) else 9
+    fields: dict[int, bytes] = {}
+    while i < n - 1:
+        tag = data[i]
+        length = data[i + 1]
+        j = i + 2
+        if j + length > n:
+            break
+        fields[tag] = data[j : j + length]
+        i = j + length
+    return fields
+
+
+def parse_a1765_param_info(data: bytes) -> dict:
+    """Best-effort decode of SOLIX C1000X Gen 2 (A1765) `param_info` messages.
+
+    anker-solix-api does not have a field mapping for this model yet (its
+    generic extraction returns nothing for A1765), so this was reverse
+    engineered directly from captured payloads and cross-checked against the
+    Anker app's own display on two units with different readings:
+      - fridge:  SOC 100%, 41C, AC in/out 47W/47W (app) vs decoded 100/41/48/48
+      - office:  SOC  61%, 38C, AC in 140W, no output (app) vs decoded 61/38/141/0
+    Tag `a5` value bytes: [type, temperature_c, _, battery_soc, max_soc, _]
+    Tag `a6` value bytes: [type, out_watts_lo, out_watts_hi, in_watts_lo, in_watts_hi, ...]
+    (battery_soc also appears as a6's last byte, which matched in both samples
+    above and is used as a cross-check, not the primary source.)
+    """
+    fields = _parse_tlv_fields(data)
+    result: dict = {}
+    a5 = fields.get(0xA5)
+    if a5 and len(a5) >= 4:
+        result["temperature_c"] = a5[1]
+        result["battery_soc"] = a5[3]
+    a6 = fields.get(0xA6)
+    if a6 and len(a6) >= 5:
+        result["ac_output_watts"] = int.from_bytes(a6[1:3], "little")
+        result["ac_input_watts"] = int.from_bytes(a6[3:5], "little")
+        if "battery_soc" in result and a6[-1] != result["battery_soc"]:
+            _LOGGER.warning(
+                "a5/a6 battery_soc mismatch (%s vs %s) - byte offsets may not "
+                "hold for this payload/firmware",
+                result["battery_soc"],
+                a6[-1],
+            )
+    return result
+
+
 class DriverState:
     def __init__(self) -> None:
         self.websession: ClientSession | None = None
         self.api: AnkerSolixApi | None = None
         self.devices: dict[str, object] = {}  # sn -> SolixMqttDevicePps
         self.renew_tasks: list[asyncio.Task] = []
+        self.manual_status: dict[str, dict] = {}  # sn -> parse_a1765_param_info() result
 
 
 state = DriverState()
 
 
 async def _renew_realtime_trigger(sn: str, device) -> None:
+    # Caller already sent the initial trigger before spawning this task -
+    # sleep first so we don't fire a redundant duplicate at t=0.
     while True:
+        await asyncio.sleep(REALTIME_TRIGGER_RENEW_SEC)
         try:
             await device.realtime_trigger(timeout=REALTIME_TRIGGER_TIMEOUT_SEC)
         except Exception:
             _LOGGER.exception("realtime_trigger failed for %s", sn)
-        await asyncio.sleep(REALTIME_TRIGGER_RENEW_SEC)
 
 
 @asynccontextmanager
@@ -98,8 +157,42 @@ async def lifespan(_: FastAPI):
     if not await state.api.startMqttSession():
         raise RuntimeError("Failed to start Anker MQTT session")
 
+    # Creating a SolixMqttDevicePps and starting the session does NOT by
+    # itself subscribe to that device's report topic (publishing commands
+    # works regardless, which is why this is easy to miss) - without this,
+    # realtime_trigger/status_request go out but nothing ever comes back.
+    for sn, device in state.devices.items():
+        dev_dict = state.api.devices.get(sn, {})
+        topic = f"{state.api.mqttsession.get_topic_prefix(deviceDict=dev_dict)}#"
+        resp = state.api.mqttsession.subscribe(topic)
+        if resp and resp.is_failure:
+            _LOGGER.warning("Failed to subscribe to MQTT topic for %s: %s", sn, topic)
+        else:
+            _LOGGER.info("Subscribed to MQTT topic for %s: %s", sn, topic)
+
+    # Log receipt at INFO (topic/sn only, never payload - the library logs
+    # full decoded payloads at DEBUG, which is unsafe: see README caveat on
+    # LOG_LEVEL) so "is any data arriving at all" is visible without DEBUG.
+    original_callback = state.api.mqttsession.message_callback()
+
+    def _log_and_forward(mqttsession, topic, message, data, model, device_sn, extracted_values):
+        _LOGGER.info("MQTT message received for %s (%s) on topic: %s", device_sn, model, topic)
+        if model == "A1765" and topic.endswith("/param_info") and isinstance(data, bytes):
+            try:
+                decoded = parse_a1765_param_info(data)
+            except Exception:
+                _LOGGER.exception("A1765 param_info decode failed for %s", device_sn)
+            else:
+                if decoded:
+                    state.manual_status[device_sn] = decoded
+        if callable(original_callback):
+            return original_callback(mqttsession, topic, message, data, model, device_sn, extracted_values)
+
+    state.api.mqttsession.message_callback(func=_log_and_forward)
+
     for sn, device in state.devices.items():
         await device.realtime_trigger(timeout=REALTIME_TRIGGER_TIMEOUT_SEC)
+        await device.status_request()
         state.renew_tasks.append(
             asyncio.create_task(_renew_realtime_trigger(sn, device))
         )
@@ -132,7 +225,15 @@ def list_devices():
 @app.get("/devices/{sn}/status")
 def get_status(sn: str):
     device = _get_device(sn)
-    return device.get_status()
+    # SolixMqttDevicePps.mqttdata is a snapshot taken at construction time,
+    # not a live view - it only reflects new MQTT messages once update_device
+    # re-syncs it from api.devices[sn]["mqtt_data"] (which mqtt_received()
+    # does keep current). Pull-refresh it here rather than relying on the
+    # library's push callback plumbing for a simple polled HTTP endpoint.
+    device.update_device(state.api.devices.get(sn, {}))
+    # Manually-decoded fields take precedence: anker-solix-api's own
+    # extraction is currently empty for A1765 (see parse_a1765_param_info).
+    return device.get_status() | state.manual_status.get(sn, {})
 
 
 @app.post("/devices/{sn}/charge-limit")

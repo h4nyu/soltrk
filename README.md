@@ -16,22 +16,32 @@ stations, charged one at a time in a configured priority order (unit fills to
   steps - this is an Anker-imposed range, not something we invented).
 - **Loop**: every `POLL_INTERVAL_MS`, `soltrk` reads total solar watts, picks
   the highest-priority Anker unit that isn't full yet, and sets its charge
-  limit to the (floor-rounded) solar wattage. Every other unit is told to
-  stop (`0W`) so it doesn't also trickle-charge from the grid in parallel.
+  limit to the solar wattage rounded *up* to the next 100W step. Every other
+  unit is told to stop (`0W`) so it doesn't also trickle-charge from the grid
+  in parallel.
 
 This is a best-effort control loop built on an unofficial protocol, not a
-certified zero-export device. Physically, commanding the active unit to draw
-power *never exceeding* current solar output cannot itself cause backfeed -
-worst case it draws a bit of grid power on top of solar, it can't push solar
-power out to the grid - but skip the disclaimers if you already know this.
+certified zero-export device. The charger is deliberately commanded to draw
+*at least* current solar output (never less): total load then always meets
+or exceeds solar generation, which guarantees no backfeed regardless of what
+the rest of the house is doing - it can only ever mean pulling a little extra
+from the grid on top of solar, never push solar power out to the grid - but
+skip the disclaimers if you already know this.
 
 ## Known caveats
 
-- **200W floor**: below ~200W of solar (e.g. dawn/dusk), the charger can't be
-  throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS` (default 150W) is the
-  cutoff below which we stop trying and just let panel output do whatever it
-  does; above that we floor to 200W, which can mean a little grid draw on
-  overcast mornings - it does not risk backfeed either way.
+- **200W floor, rounds up**: below ~200W of solar (e.g. dawn/dusk), the
+  charger can't be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS`
+  (default 150W) is the cutoff below which we stop trying and just let panel
+  output do whatever it does; above that, and up through every 100W step, the
+  target is rounded up (not down) so the charger always draws at least as
+  much as solar is currently producing - the small overshoot (up to 99W) is
+  extra grid draw, which is the deliberate trade-off for the backfeed
+  guarantee above. If you know a constant amount of house load is always
+  present (fridge compressor, routers, etc), set `HOUSE_STANDBY_WATTS` to it
+  - that much of solar is treated as already spoken for and doesn't need
+  covering by the charger, shrinking the overshoot. Leave at `0` (default) if
+  unsure; setting it too high is what could actually cause backfeed.
 - **`0W` = "stop charging" is unverified.** The library documents 200-1000W
   from the app UI, but not what setting `0` does on real hardware. Test once
   manually (watch `docker compose logs -f soltrk` and the unit's own display)

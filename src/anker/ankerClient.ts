@@ -2,6 +2,9 @@ import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
 
 interface RawAnkerStatus {
   battery_soc?: number;
+  // Some PPS models/message types report SOC under this key instead - see
+  // anker_solix_api/mqttmap.py, which isn't consistent per-model.
+  main_battery_soc?: number;
   [key: string]: unknown;
 }
 
@@ -16,7 +19,7 @@ export class AnkerClient implements BatteryDriver {
         return undefined;
       }
       const raw = (await res.json()) as RawAnkerStatus;
-      return { batterySoc: raw.battery_soc };
+      return { batterySoc: raw.battery_soc ?? raw.main_battery_soc };
     } catch (err) {
       console.error(`[anker:${sn}] status request failed:`, (err as Error).message);
       return undefined;
