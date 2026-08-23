@@ -161,10 +161,15 @@ skip the disclaimers only if you understand it.
 
 ### 1. Tuya local keys for both GTB-800 units
 
-You need each device's `id`, `local_key`, and LAN `ip` (tinytuya's
-`wizard`/Tuya IoT Platform linking flow is the standard way to extract
-these - not automated here, since it needs your own Tuya developer account).
-Give each device a static IP/DHCP reservation so it doesn't change under you.
+You need each device's `id` and `local_key` (tinytuya's `wizard`/Tuya IoT
+Platform linking flow is the standard way to extract these - not automated
+here, since it needs your own Tuya developer account). No IP is needed in
+config: it's resolved dynamically at connect time via UDP broadcast
+(tuyapi's `find()`), since this network's devices don't have DHCP
+reservations and their IPs drift - see "How it works" for why, and note
+this requires `network_mode: host` (already set in `docker-compose.yml`;
+requires Docker Desktop's host networking support to be enabled under
+Settings > Resources > Network).
 
 ### 2. Confirm the power dp code and scale
 
@@ -173,7 +178,7 @@ The GTB-800's exact Tuya dp schema isn't published, so don't trust the
 blindly. After building once (`docker compose build soltrk`), run:
 
 ```
-docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>
+docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
 ```
 
 Watch which `dp` code moves in sync with the panel's actual instantaneous
@@ -253,12 +258,12 @@ doesn't depend on the Anker device's firmware at all - if there's no AC
 power at the wall, the device can't charge, full stop.
 
 Onboard the plug the same way as the GTB-800 units (Tuya IoT Platform
-"Link App Account", API Explorer for the `local_key`, router DHCP list for
-the LAN `ip` - see step 1), then confirm its switch dp with the same
-`discover.ts` script used for the panels:
+"Link App Account", API Explorer for the `local_key` - see step 1; no LAN
+IP needed), then confirm its switch dp with the same `discover.ts` script
+used for the panels:
 
 ```
-docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>
+docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
 ```
 
 `"1"` is the standard boolean on/off dp for most Tuya plugs and is the
@@ -267,7 +272,6 @@ default if `TUYA_PLUG_*_SWITCH_DP` is unset. Then add to `.env`:
 ```
 TUYA_PLUG_1_ID=...
 TUYA_PLUG_1_KEY=...
-TUYA_PLUG_1_IP=...
 TUYA_PLUG_1_GATES_SN=APCDLRG0G06401641   # the battery this plug's output feeds
 ```
 
@@ -307,19 +311,37 @@ otherwise keep charging from AC no matter what wattage is requested - see
 
 ```ts
 type BatteryDriver = {
-  getStatus(sn: string): Promise<BatteryStatus | undefined>;
-  setChargeLimit(sn: string, watts: number): Promise<boolean>;
+  getStatus(sn: string): Promise<Result<BatteryStatus>>;
+  setChargeLimit(sn: string, watts: number, acOn?: boolean): Promise<Result<void>>;
 };
 ```
 
-`NativeAnkerClient` (`packages/anker`) is the one adapter implementing it
-today. To add a second brand: create a new `packages/<vendor>` implementing
-`BatteryDriver` (depending on `@soltrk/core` for the port type, nothing
-else), register an instance of it in `packages/cli/src/battery/registry.ts`
-under a vendor key, and tag that battery's `data/priority.json` entry with
-`"vendor": "<your key>"`. No changes needed in `packages/core`. The same
-pattern applies to solar sources via the `SolarSource` port if you ever add
-a second panel/inverter integration.
+Anything that can fail returns a `Result<T, E extends Error = Error> = T |
+E` (`packages/core/src/result.ts`) instead of `T | undefined`/`boolean` -
+the simplest error-branching shape available: a success value or a plain
+`Error` instance, narrowed via `instanceof`/`in`. No wrapper object, no
+class hierarchy - errors that need to carry typed extra data (e.g.
+`AccountLockedError`'s `retryAfterMinutes` in `packages/anker/src/httpApi.ts`)
+are plain `Error`s tagged with a discriminant `kind` field
+(`Object.assign(new Error(...), {kind: "...", ...fields})`) rather than
+subclassed.
+
+Adapters are written as factories, not classes: `export const Thing =
+(props) => { ...local consts/closures for private state...; return {
+...only the methods the port needs... }; }`, each returned method typed
+against the port (`BatteryDriver["getStatus"]`) so drifting from the
+interface is a type error. See `packages/anker/src/nativeAnkerClient.ts` or
+`packages/tuya/src/solarSource.ts` for real examples.
+
+`NativeAnkerClient` (`packages/anker`) is the one adapter implementing
+`BatteryDriver` today. To add a second brand: create a new
+`packages/<vendor>` implementing it the same way (depending on
+`@soltrk/core` for the port type, nothing else), register an instance of it
+in `packages/cli/src/battery/registry.ts` under a vendor key, and tag that
+battery's `data/priority.json` entry with `"vendor": "<your key>"`. No
+changes needed in `packages/core`. The same pattern applies to solar
+sources via the `SolarSource` port if you ever add a second panel/inverter
+integration.
 
 ## Development
 

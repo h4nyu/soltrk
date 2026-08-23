@@ -8,7 +8,10 @@ export type TuyaDeviceConfig = {
   name: string;
   id: string;
   key: string;
-  ip: string;
+  // No IP: it's resolved dynamically via UDP broadcast (tuyapi's find())
+  // on every connect/reconnect instead of being pinned in config, since
+  // devices on this network don't have DHCP reservations and their IPs
+  // drift (see SolarSource/SmartPlug).
   powerDp: string;
   // Raw Tuya dp value is divided by this to get Watts (Tuya often reports
   // power in tenths of a watt). Confirm the right value for your device
@@ -25,14 +28,13 @@ export function loadTuyaDevices(): TuyaDeviceConfig[] {
       name: process.env[`TUYA_DEVICE_${i}_NAME`] ?? `gtb800-${i}`,
       id,
       key: required(`TUYA_DEVICE_${i}_KEY`),
-      ip: required(`TUYA_DEVICE_${i}_IP`),
       powerDp: process.env[`TUYA_DEVICE_${i}_POWER_DP`] ?? "19",
       powerScale: Number(process.env[`TUYA_DEVICE_${i}_POWER_SCALE`] ?? "10"),
     });
   }
   if (devices.length === 0) {
     throw new Error(
-      "No Tuya devices configured. Set TUYA_DEVICE_1_ID / _KEY / _IP (and _2_* for the second GTB-800).",
+      "No Tuya devices configured. Set TUYA_DEVICE_1_ID / _KEY (and _2_* for the second GTB-800).",
     );
   }
   return devices;
@@ -41,7 +43,7 @@ export function loadTuyaDevices(): TuyaDeviceConfig[] {
 export type TuyaPlugConfig = {
   id: string;
   key: string;
-  ip: string;
+  // No IP - see TuyaDeviceConfig.
   // Boolean on/off dp code - "1" is the standard default for most Tuya
   // smart plugs, confirm with `npm run tuya:discover` if a plug doesn't
   // respond.
@@ -64,7 +66,6 @@ export function loadTuyaPlugs(): TuyaPlugConfig[] {
     plugs.push({
       id,
       key: required(`TUYA_PLUG_${i}_KEY`),
-      ip: required(`TUYA_PLUG_${i}_IP`),
       switchDp: process.env[`TUYA_PLUG_${i}_SWITCH_DP`] ?? "1",
       gatesSn: required(`TUYA_PLUG_${i}_GATES_SN`),
     });

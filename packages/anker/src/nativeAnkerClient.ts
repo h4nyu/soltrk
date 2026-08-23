@@ -1,5 +1,5 @@
-import { BatteryDriver, BatteryStatus, Result } from "@soltrk/core";
-import { AnkerDevice, AnkerError, AnkerSession, getBindDevices, getUserMqttInfo, login } from "./httpApi";
+import { BatteryDriver, Result } from "@soltrk/core";
+import { AnkerDevice, AnkerError, getBindDevices, getUserMqttInfo, login } from "./httpApi";
 import { AnkerMqttSession } from "./mqttSession";
 import { encodeRealtimeTrigger, encodeSetChargeLimit } from "./protocol";
 
@@ -21,24 +21,50 @@ const SUPPORTED_MODELS = new Set(["A1765"]);
  * for how each piece (ECDH+AES login, TLV command format) was reverse
  * engineered and cross-validated against real hardware.
  */
-export class NativeAnkerClient implements BatteryDriver {
-  private mqttSession?: AnkerMqttSession;
-  private devicesBySn = new Map<string, AnkerDevice>();
+export const NativeAnkerClient = (props: { email: string; password: string; country: string }): BatteryDriver => {
+  const { email, password, country } = props;
+  let mqttSession: AnkerMqttSession | undefined;
+  const devicesBySn = new Map<string, AnkerDevice>();
   // Flips true once init eventually succeeds; until then getStatus/
   // setChargeLimit just report "not available" instead of awaiting a
   // promise (awaiting would stall the whole control loop across however
   // many retry rounds a login outage lasts).
-  private initialized = false;
+  let initialized = false;
 
-  constructor(email: string, password: string, country: string) {
-    void this.initWithRetry(email, password, country);
-  }
+  const init = async (): Promise<Result<void, AnkerError | Error>> => {
+    try {
+      const session = await login(email, password, country);
+      if (session instanceof Error) return session;
 
-  private async initWithRetry(email: string, password: string, country: string): Promise<void> {
+      const devices = await getBindDevices(session);
+      if (devices instanceof Error) return devices;
+      const supported = devices.filter((d) => SUPPORTED_MODELS.has(d.device_pn));
+      for (const d of supported) devicesBySn.set(d.device_sn, d);
+      if (supported.length === 0) {
+        console.warn("[anker] no supported (A1765) devices found among", devices.length, "bound devices");
+      }
+
+      const mqttInfo = await getUserMqttInfo(session);
+      if (mqttInfo instanceof Error) return mqttInfo;
+
+      mqttSession = new AnkerMqttSession(session, mqttInfo);
+      await mqttSession.connect();
+      for (const d of supported) mqttSession.subscribeDevice(d);
+
+      startRealtimeTriggerLoop(supported);
+      return undefined;
+    } catch (err) {
+      // Fallback for anything below the httpApi layer (MQTT connect, etc.)
+      // that still throws rather than returning a Result.
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  };
+
+  const initWithRetry = async (): Promise<void> => {
     for (;;) {
-      const result = await this.init(email, password, country);
+      const result = await init();
       if (!(result instanceof Error)) {
-        this.initialized = true;
+        initialized = true;
         console.log("[anker] initialized");
         return;
       }
@@ -56,42 +82,13 @@ export class NativeAnkerClient implements BatteryDriver {
       );
       await new Promise((r) => setTimeout(r, retryMs));
     }
-  }
+  };
 
-  private async init(email: string, password: string, country: string): Promise<Result<void, AnkerError | Error>> {
-    try {
-      const session = await login(email, password, country);
-      if (session instanceof Error) return session;
-
-      const devices = await getBindDevices(session);
-      if (devices instanceof Error) return devices;
-      const supported = devices.filter((d) => SUPPORTED_MODELS.has(d.device_pn));
-      for (const d of supported) this.devicesBySn.set(d.device_sn, d);
-      if (supported.length === 0) {
-        console.warn("[anker] no supported (A1765) devices found among", devices.length, "bound devices");
-      }
-
-      const mqttInfo = await getUserMqttInfo(session);
-      if (mqttInfo instanceof Error) return mqttInfo;
-
-      this.mqttSession = new AnkerMqttSession(session, mqttInfo);
-      await this.mqttSession.connect();
-      for (const d of supported) this.mqttSession.subscribeDevice(d);
-
-      this.startRealtimeTriggerLoop(supported);
-      return undefined;
-    } catch (err) {
-      // Fallback for anything below the httpApi layer (MQTT connect, etc.)
-      // that still throws rather than returning a Result.
-      return err instanceof Error ? err : new Error(String(err));
-    }
-  }
-
-  private startRealtimeTriggerLoop(devices: AnkerDevice[]): void {
+  const startRealtimeTriggerLoop = (devices: AnkerDevice[]): void => {
     const trigger = async () => {
       for (const d of devices) {
         try {
-          await this.mqttSession?.publishCommand(d, encodeRealtimeTrigger(REALTIME_TRIGGER_TIMEOUT_SEC));
+          await mqttSession?.publishCommand(d, encodeRealtimeTrigger(REALTIME_TRIGGER_TIMEOUT_SEC));
         } catch (err) {
           console.error(`[anker:${d.device_sn}] realtime_trigger failed:`, (err as Error).message);
         }
@@ -99,38 +96,43 @@ export class NativeAnkerClient implements BatteryDriver {
     };
     void trigger();
     setInterval(trigger, REALTIME_TRIGGER_RENEW_MS);
-  }
+  };
 
-  async getStatus(sn: string): Promise<BatteryStatus | undefined> {
-    if (!this.initialized) return undefined;
-    const status = this.mqttSession?.getStatus(sn);
-    return status
-      ? {
-          batterySoc: status.batterySoc,
-          temperatureC: status.temperatureC,
-          acInputWatts: status.acInputWatts,
-          acOutputWatts: status.acOutputWatts,
-        }
-      : undefined;
-  }
+  void initWithRetry();
 
-  async setChargeLimit(sn: string, watts: number): Promise<boolean> {
-    if (!this.initialized) return false;
-    const device = this.devicesBySn.get(sn);
-    if (!device || !this.mqttSession) {
-      console.error(`[anker:${sn}] unknown device or MQTT session not ready`);
-      return false;
+  const getStatus: BatteryDriver["getStatus"] = async (sn) => {
+    if (!initialized) return new Error(`[anker:${sn}] not initialized yet`);
+    const status = mqttSession?.getStatus(sn);
+    if (!status) return new Error(`[anker:${sn}] no status received yet`);
+    return {
+      batterySoc: status.batterySoc,
+      temperatureC: status.temperatureC,
+      acInputWatts: status.acInputWatts,
+      acOutputWatts: status.acOutputWatts,
+    };
+  };
+
+  const setChargeLimit: BatteryDriver["setChargeLimit"] = async (sn, watts) => {
+    if (!initialized) return new Error(`[anker:${sn}] not initialized yet`);
+    const device = devicesBySn.get(sn);
+    if (!device || !mqttSession) {
+      const message = `[anker:${sn}] unknown device or MQTT session not ready`;
+      console.error(message);
+      return new Error(message);
     }
     try {
       // watts=0 is the "stop charging" signal for deprioritized devices,
       // but this alone doesn't guarantee it stops on real hardware: the
       // device's own TOU schedule is a separate layer that can keep
       // charging from AC regardless of what's requested here (see README).
-      await this.mqttSession.publishCommand(device, encodeSetChargeLimit(watts));
-      return true;
+      await mqttSession.publishCommand(device, encodeSetChargeLimit(watts));
+      return undefined;
     } catch (err) {
-      console.error(`[anker:${sn}] set-charge-limit(${watts}) failed:`, (err as Error).message);
-      return false;
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error(`[anker:${sn}] set-charge-limit(${watts}) failed:`, error.message);
+      return error;
     }
-  }
-}
+  };
+
+  return { getStatus, setChargeLimit };
+};

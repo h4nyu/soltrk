@@ -12,7 +12,11 @@ import { GatedBatteryDriver, gatesBySn } from "./gatedBatteryDriver";
 const driverFactories: Record<string, () => BatteryDriver> = {
   anker: () => {
     const config = loadConfig();
-    return new NativeAnkerClient(config.ankerEmail, config.ankerPassword, config.ankerCountry);
+    return NativeAnkerClient({
+      email: config.ankerEmail,
+      password: config.ankerPassword,
+      country: config.ankerCountry,
+    });
   },
   // Same underlying Anker devices, gated by a physical Tuya smart plug for
   // whichever sn(s) have a TUYA_PLUG_*_GATES_SN entry - see
@@ -20,13 +24,13 @@ const driverFactories: Record<string, () => BatteryDriver> = {
   // gatedBatteryDriver.ts.
   "anker-gated": () => {
     const config = loadConfig();
-    return new GatedBatteryDriver(
-      getDriver("anker"),
-      gatesBySn(loadTuyaPlugs()),
-      config.chargeLimitMin,
-      config.gatedCriticalSocPercent,
-      config.gatedRecoverySocPercent,
-    );
+    return GatedBatteryDriver({
+      inner: getDriver("anker"),
+      plugsBySn: gatesBySn(loadTuyaPlugs()),
+      offWatts: config.chargeLimitMin,
+      criticalSocPercent: config.gatedCriticalSocPercent,
+      recoverySocPercent: config.gatedRecoverySocPercent,
+    });
   },
 };
 
