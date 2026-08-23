@@ -1,3 +1,4 @@
+export * from "./result";
 export * from "./battery/BatteryDriver";
 export * from "./solar/SolarSource";
 export * from "./control/allocator";

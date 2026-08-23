@@ -1,3 +1,4 @@
+import { Result } from "@soltrk/core";
 import { performKeyExchange, encryptApiData, gtokenFromUserId } from "./crypto";
 
 const API_BASE = "https://ankerpower-api-eu.anker.com";
@@ -37,6 +38,45 @@ export type AnkerMqttInfo = {
   app_name: string;
 };
 
+// Plain Error instances tagged with a discriminant `kind` field, rather
+// than a class hierarchy - a real Error (stack trace, works with
+// `instanceof Error` for Result's own T | E narrowing), narrowed further by
+// callers via `"kind" in result && result.kind === "..."`.
+export type AnkerHttpError = Error & { kind: "http_error"; status: number };
+export type AnkerApiError = Error & { kind: "api_error"; code: number };
+// Anker's account-lockout response (observed as code 10019) only gives the
+// retry window as English prose ("...disabled for 9 minutes...") - there's
+// no structured field for it, so it's parsed out of the message once here
+// rather than leaving every caller to re-parse a free-text string.
+export type AccountLockedError = Error & {
+  kind: "account_locked";
+  code: number;
+  retryAfterMinutes: number;
+};
+export type AnkerError = AnkerHttpError | AnkerApiError | AccountLockedError;
+
+function httpError(status: number, endpoint: string): AnkerHttpError {
+  return Object.assign(new Error(`Anker API ${endpoint} -> HTTP ${status}`), {
+    kind: "http_error" as const,
+    status,
+  });
+}
+
+const LOCKOUT_MINUTES_PATTERN = /disabled for (\d+) minutes?/i;
+
+function apiError(code: number, endpoint: string, apiMessage: string): AnkerApiError | AccountLockedError {
+  const message = `Anker API ${endpoint} -> code ${code}: ${apiMessage}`;
+  const lockout = apiMessage.match(LOCKOUT_MINUTES_PATTERN);
+  if (lockout) {
+    return Object.assign(new Error(message), {
+      kind: "account_locked" as const,
+      code,
+      retryAfterMinutes: Number(lockout[1]),
+    });
+  }
+  return Object.assign(new Error(message), { kind: "api_error" as const, code });
+}
+
 function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
@@ -45,7 +85,7 @@ async function ankerRequest<T>(
   session: AnkerSession | null,
   endpoint: string,
   body: Record<string, unknown>,
-): Promise<T> {
+): Promise<Result<T, AnkerError>> {
   const headers: Record<string, string> = {
     ...API_HEADERS,
     country: session?.countryId ?? "",
@@ -59,13 +99,10 @@ async function ankerRequest<T>(
     headers,
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    throw new Error(`Anker API ${endpoint} -> HTTP ${res.status}`);
-  }
+  if (!res.ok) return httpError(res.status, endpoint);
+
   const json = (await res.json()) as { code: number; msg: string; data: T };
-  if (json.code !== 0) {
-    throw new Error(`Anker API ${endpoint} -> code ${json.code}: ${json.msg}`);
-  }
+  if (json.code !== 0) return apiError(json.code, endpoint, json.msg);
   return json.data;
 }
 
@@ -79,7 +116,7 @@ export async function login(
   email: string,
   password: string,
   countryId: string,
-): Promise<AnkerSession> {
+): Promise<Result<AnkerSession, AnkerError>> {
   const { publicKeyHex, sharedSecret } = performKeyExchange();
   const data = await ankerRequest<{ user_id: string; auth_token: string }>(
     null,
@@ -94,6 +131,7 @@ export async function login(
       transaction: String(Date.now()),
     },
   );
+  if (data instanceof Error) return data;
   return {
     countryId,
     authToken: data.auth_token,
@@ -102,18 +140,23 @@ export async function login(
   };
 }
 
-export async function getBindDevices(session: AnkerSession): Promise<AnkerDevice[]> {
+export async function getBindDevices(
+  session: AnkerSession,
+): Promise<Result<AnkerDevice[], AnkerError>> {
   const data = await ankerRequest<{ data: AnkerDevice[] }>(
     session,
     "power_service/v1/app/get_relate_and_bind_devices",
     {},
   );
+  if (data instanceof Error) return data;
   return (data.data ?? []).map((d) => ({
     ...d,
     device_pn: d.device_pn ?? (d.product_code as string | undefined) ?? "",
   }));
 }
 
-export async function getUserMqttInfo(session: AnkerSession): Promise<AnkerMqttInfo> {
+export async function getUserMqttInfo(
+  session: AnkerSession,
+): Promise<Result<AnkerMqttInfo, AnkerError>> {
   return ankerRequest<AnkerMqttInfo>(session, "app/devicemanage/get_user_mqtt_info", {});
 }

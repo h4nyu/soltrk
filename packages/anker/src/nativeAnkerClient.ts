@@ -1,15 +1,15 @@
-import { BatteryDriver, BatteryStatus } from "@soltrk/core";
-import { AnkerDevice, AnkerSession, getBindDevices, getUserMqttInfo, login } from "./httpApi";
+import { BatteryDriver, BatteryStatus, Result } from "@soltrk/core";
+import { AnkerDevice, AnkerError, AnkerSession, getBindDevices, getUserMqttInfo, login } from "./httpApi";
 import { AnkerMqttSession } from "./mqttSession";
 import { encodeRealtimeTrigger, encodeSetChargeLimit } from "./protocol";
 
 const REALTIME_TRIGGER_TIMEOUT_SEC = 300;
+// Fallback wait for failures we can't parse a specific retry window out of
+// (network errors, generic Anker throttling like code 26161) - deliberately
+// long, since retrying fast is exactly what feeds Anker's sign-in lockout
+// in the first place.
+const DEFAULT_INIT_RETRY_MS = 15 * 60_000;
 const REALTIME_TRIGGER_RENEW_MS = 240_000;
-// Deliberately long: Anker locks the account after a few failed sign-in
-// attempts in a short window (observed: "disabled for 9 minutes" after
-// rapid restarts, and a longer-lived "26161 Failed to request" throttle
-// beyond that), so retrying fast makes an outage worse, not better.
-const INIT_RETRY_MS = 15 * 60_000;
 // Only A1765 (SOLIX C1000X Gen 2) has a decoder wired up (see protocol.ts) -
 // other models would need their own parseXParamInfo before being usable here.
 const SUPPORTED_MODELS = new Set(["A1765"]);
@@ -26,8 +26,8 @@ export class NativeAnkerClient implements BatteryDriver {
   private devicesBySn = new Map<string, AnkerDevice>();
   // Flips true once init eventually succeeds; until then getStatus/
   // setChargeLimit just report "not available" instead of awaiting a
-  // promise (awaiting would stall the whole control loop for however many
-  // 15-minute retry rounds a login outage lasts).
+  // promise (awaiting would stall the whole control loop across however
+  // many retry rounds a login outage lasts).
   private initialized = false;
 
   constructor(email: string, password: string, country: string) {
@@ -36,36 +36,55 @@ export class NativeAnkerClient implements BatteryDriver {
 
   private async initWithRetry(email: string, password: string, country: string): Promise<void> {
     for (;;) {
-      try {
-        await this.init(email, password, country);
+      const result = await this.init(email, password, country);
+      if (!(result instanceof Error)) {
         this.initialized = true;
         console.log("[anker] initialized");
         return;
-      } catch (err) {
-        console.error(
-          `[anker] initialization failed (retrying in ${INIT_RETRY_MS / 60_000} min):`,
-          (err as Error).message,
-        );
-        await new Promise((r) => setTimeout(r, INIT_RETRY_MS));
       }
+      // "account_locked" carries Anker's own stated lockout window (e.g.
+      // "disabled for 9 minutes") - honor that exactly (plus a buffer
+      // minute) instead of the generic fallback delay, since retrying
+      // before it expires only re-triggers the lockout.
+      const retryMs =
+        "kind" in result && result.kind === "account_locked"
+          ? (result.retryAfterMinutes + 1) * 60_000
+          : DEFAULT_INIT_RETRY_MS;
+      console.error(
+        `[anker] initialization failed (retrying in ${Math.round(retryMs / 60_000)} min):`,
+        result.message,
+      );
+      await new Promise((r) => setTimeout(r, retryMs));
     }
   }
 
-  private async init(email: string, password: string, country: string): Promise<void> {
-    const session: AnkerSession = await login(email, password, country);
-    const devices = await getBindDevices(session);
-    const supported = devices.filter((d) => SUPPORTED_MODELS.has(d.device_pn));
-    for (const d of supported) this.devicesBySn.set(d.device_sn, d);
-    if (supported.length === 0) {
-      console.warn("[anker] no supported (A1765) devices found among", devices.length, "bound devices");
+  private async init(email: string, password: string, country: string): Promise<Result<void, AnkerError | Error>> {
+    try {
+      const session = await login(email, password, country);
+      if (session instanceof Error) return session;
+
+      const devices = await getBindDevices(session);
+      if (devices instanceof Error) return devices;
+      const supported = devices.filter((d) => SUPPORTED_MODELS.has(d.device_pn));
+      for (const d of supported) this.devicesBySn.set(d.device_sn, d);
+      if (supported.length === 0) {
+        console.warn("[anker] no supported (A1765) devices found among", devices.length, "bound devices");
+      }
+
+      const mqttInfo = await getUserMqttInfo(session);
+      if (mqttInfo instanceof Error) return mqttInfo;
+
+      this.mqttSession = new AnkerMqttSession(session, mqttInfo);
+      await this.mqttSession.connect();
+      for (const d of supported) this.mqttSession.subscribeDevice(d);
+
+      this.startRealtimeTriggerLoop(supported);
+      return undefined;
+    } catch (err) {
+      // Fallback for anything below the httpApi layer (MQTT connect, etc.)
+      // that still throws rather than returning a Result.
+      return err instanceof Error ? err : new Error(String(err));
     }
-
-    const mqttInfo = await getUserMqttInfo(session);
-    this.mqttSession = new AnkerMqttSession(session, mqttInfo);
-    await this.mqttSession.connect();
-    for (const d of supported) this.mqttSession.subscribeDevice(d);
-
-    this.startRealtimeTriggerLoop(supported);
   }
 
   private startRealtimeTriggerLoop(devices: AnkerDevice[]): void {
