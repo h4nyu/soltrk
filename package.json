@@ -3,13 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts run"
+    "dev": "tsx watch src/index.ts run",
+    "test": "find . -name '*.test.ts' -not -path '*/node_modules/*' | xargs tsx --test"
   },
   "dependencies": {
-    "tuyapi": "^7.4.0",
+    "@soltrk/core": "*",
+    "@soltrk/anker": "*",
+    "@soltrk/tuya": "*",
     "tsx": "^4.19.0"
   },
   "devDependencies": {

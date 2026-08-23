@@ -4,14 +4,14 @@ import { dirname } from "path";
 // Tied to the ./data volume mount in docker-compose.yml, like state.json.
 const PRIORITY_FILE_PATH = "./data/priority.json";
 
-export interface PriorityEntry {
+export type PriorityEntry = {
   sn: string;
   name?: string;
   // Key into src/battery/registry.ts. Defaults to "anker" so existing
   // priority.json files (written before other vendors existed) still work.
   vendor?: string;
   priority: number;
-}
+};
 
 function isPriorityEntryArray(value: unknown): value is PriorityEntry[] {
   return (

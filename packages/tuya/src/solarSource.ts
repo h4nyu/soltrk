@@ -1,12 +1,12 @@
 import TuyAPI from "tuyapi";
-import { TuyaDeviceConfig } from "../config";
+import { TuyaDeviceConfig } from "./config";
 
-interface TrackedDevice {
+type TrackedDevice = {
   config: TuyaDeviceConfig;
   client: TuyAPI;
   lastWatts: number | undefined;
   lastUpdatedAt: number;
-}
+};
 
 const STALE_AFTER_MS = 60_000;
 
