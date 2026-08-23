@@ -52,8 +52,8 @@ Give each device a static IP/DHCP reservation so it doesn't change under you.
 ### 2. Confirm the power dp code and scale
 
 The GTB-800's exact Tuya dp schema isn't published, so don't trust the
-`TUYA_DEVICE_*_POWER_DP`/`_POWER_SCALE` defaults in `.env.example` blindly.
-After building once (`docker compose build soltrk`), run:
+`TUYA_DEVICE_*_POWER_DP`/`_POWER_SCALE` defaults in `docker-compose.yml`
+blindly. After building once (`docker compose build soltrk`), run:
 
 ```
 docker compose run --rm soltrk npx tsx src/tuya/discover.ts <id> <key> <ip>
@@ -65,11 +65,16 @@ raw watts or needs dividing (commonly by 10) to get watts.
 
 ### 3. Anker account + device serials
 
-Fill `ANKER_EMAIL` / `ANKER_PASSWORD` / `ANKER_COUNTRY` in `.env`. Start just
-the driver and list devices to get serials:
+All env vars are declared in the `x-env` block at the top of
+`docker-compose.yml` (required ones as bare `${VAR}`, optional ones with a
+`${VAR:-default}` fallback, and internal service-wiring values hardcoded) -
+that file is the source of truth for what exists and its default, not a
+separate `.env.example`. Create a git-ignored `.env` next to it with at least
+the required keys (`ANKER_EMAIL`, `ANKER_PASSWORD`, `ANKER_PRIORITY_SNS`,
+`TUYA_DEVICE_1_*`, `TUYA_DEVICE_2_*`), then start just the driver and list
+devices to get serials:
 
 ```
-cp .env.example .env   # fill it in first
 docker compose up -d anker-driver
 curl http://localhost:8000/devices
 ```

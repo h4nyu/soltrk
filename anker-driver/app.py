@@ -31,6 +31,15 @@ REALTIME_TRIGGER_TIMEOUT_SEC = 300
 REALTIME_TRIGGER_RENEW_SEC = 240
 
 
+def _require_env(name: str) -> str:
+    # docker-compose still sets an unset ${VAR} to an empty string rather
+    # than omitting it, so os.environ[name] alone would not catch this.
+    value = os.environ.get(name, "")
+    if not value:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return value
+
+
 class ChargeLimitRequest(BaseModel):
     watts: int
 
@@ -57,8 +66,8 @@ async def _renew_realtime_trigger(sn: str, device) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    email = os.environ["ANKER_EMAIL"]
-    password = os.environ["ANKER_PASSWORD"]
+    email = _require_env("ANKER_EMAIL")
+    password = _require_env("ANKER_PASSWORD")
     country = os.environ.get("ANKER_COUNTRY", "JP")
     allowlist = {
         sn.strip()
