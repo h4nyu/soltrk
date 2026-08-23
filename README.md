@@ -71,7 +71,7 @@ found the same way, without any TLS interception (mitmproxy etc.) - AWS IoT
 just lets our own MQTT session subscribe to the *app's own* publish topic,
 not only the device's:
 
-1. Run `docker compose run --rm soltrk npx tsx packages/anker/src/captureMqtt.ts <device_sn>`
+1. Run `docker compose run --rm soltrk npx tsx packages/anker/src/capture-mqtt.ts <device_sn>`
    - this logs into the same Anker account and subscribes to both
    `dt/{app}/{pn}/{sn}/#` (device -> cloud) and `cmd/{app}/{pn}/{sn}/#`
    (app -> device, i.e. the topic the real Anker app itself publishes to).
@@ -295,7 +295,7 @@ default if a plug entry omits `"switchDp"`. Then add to `data/tuya.json`'s
 
 (`gatesSn` is the battery this plug's output feeds), and set that
 battery's `vendor` to `"anker-gated"` in `data/priority.json` (step 4).
-`GatedBatteryDriver` (`packages/cli/src/battery/gatedBatteryDriver.ts`)
+`GatedBatteryDriver` (`packages/cli/src/battery/gated-battery-driver.ts`)
 then cuts the plug whenever the allocator deprioritizes that battery, and
 restores it (plus still sending the normal wattage command for fine
 control) whenever it's the active charging target - any sn with no
@@ -325,7 +325,7 @@ otherwise keep charging from AC no matter what wattage is requested - see
 
 `packages/core`'s control loop and allocator never talk to
 `NativeAnkerClient` directly - they depend only on the `BatteryDriver` port
-(`packages/core/src/battery/BatteryDriver.ts`):
+(`packages/core/src/battery/battery-driver.ts`):
 
 ```ts
 type BatteryDriver = {
@@ -339,7 +339,7 @@ E` (`packages/core/src/result.ts`) instead of `T | undefined`/`boolean` -
 the simplest error-branching shape available: a success value or a plain
 `Error` instance, narrowed via `instanceof`/`in`. No wrapper object, no
 class hierarchy - errors that need to carry typed extra data (e.g.
-`AccountLockedError`'s `retryAfterMinutes` in `packages/anker/src/httpApi.ts`)
+`AccountLockedError`'s `retryAfterMinutes` in `packages/anker/src/http-api.ts`)
 are plain `Error`s tagged with a discriminant `kind` field
 (`Object.assign(new Error(...), {kind: "...", ...fields})`) rather than
 subclassed.
@@ -348,8 +348,8 @@ Adapters are written as factories, not classes: `export const Thing =
 (props) => { ...local consts/closures for private state...; return {
 ...only the methods the port needs... }; }`, each returned method typed
 against the port (`BatteryDriver["getStatus"]`) so drifting from the
-interface is a type error. See `packages/anker/src/nativeAnkerClient.ts` or
-`packages/tuya/src/solarSource.ts` for real examples.
+interface is a type error. See `packages/anker/src/native-anker-client.ts`
+or `packages/tuya/src/solar-source.ts` for real examples.
 
 `NativeAnkerClient` (`packages/anker`) is the one adapter implementing
 `BatteryDriver` today. To add a second brand: create a new

@@ -1,3 +1,3 @@
 export * from "./config";
-export * from "./solarSource";
-export * from "./smartPlug";
+export * from "./solar-source";
+export * from "./smart-plug";

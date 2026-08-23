@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { BatteryDriver, BatteryStatus, Result } from "@soltrk/core";
-import { GatedBatteryDriver, PowerGate } from "./gatedBatteryDriver";
+import { GatedBatteryDriver, PowerGate } from "./gated-battery-driver";
 
 const GATED_SN = "gated-sn";
 const OTHER_SN = "other-sn";

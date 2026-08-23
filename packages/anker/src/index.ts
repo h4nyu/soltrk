@@ -1,3 +1,3 @@
-export * from "./httpApi";
+export * from "./http-api";
 export * from "./protocol";
-export * from "./nativeAnkerClient";
+export * from "./native-anker-client";

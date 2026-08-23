@@ -1,6 +1,6 @@
 import { BatteryDriver, Result } from "@soltrk/core";
-import { AnkerDevice, AnkerError, getBindDevices, getUserMqttInfo, login } from "./httpApi";
-import { AnkerMqttSession } from "./mqttSession";
+import { AnkerDevice, AnkerError, getBindDevices, getUserMqttInfo, login } from "./http-api";
+import { AnkerMqttSession } from "./mqtt-session";
 import { encodeRealtimeTrigger, encodeSetChargeLimit } from "./protocol";
 
 const REALTIME_TRIGGER_TIMEOUT_SEC = 300;
