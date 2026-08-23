@@ -37,3 +37,37 @@ export function loadTuyaDevices(): TuyaDeviceConfig[] {
   }
   return devices;
 }
+
+export type TuyaPlugConfig = {
+  id: string;
+  key: string;
+  ip: string;
+  // Boolean on/off dp code - "1" is the standard default for most Tuya
+  // smart plugs, confirm with `npm run tuya:discover` if a plug doesn't
+  // respond.
+  switchDp: string;
+  // Serial number of the battery this plug's AC output feeds - ties the
+  // plug to a BatteryDriver.setChargeLimit() call in GatedBatteryDriver.
+  gatesSn: string;
+};
+
+/**
+ * Unlike loadTuyaDevices(), an empty result is valid here - not every
+ * battery needs a physical AC cutoff, so no TUYA_PLUG_* vars being set just
+ * means no device is gated.
+ */
+export function loadTuyaPlugs(): TuyaPlugConfig[] {
+  const plugs: TuyaPlugConfig[] = [];
+  for (let i = 1; ; i++) {
+    const id = process.env[`TUYA_PLUG_${i}_ID`];
+    if (!id) break;
+    plugs.push({
+      id,
+      key: required(`TUYA_PLUG_${i}_KEY`),
+      ip: required(`TUYA_PLUG_${i}_IP`),
+      switchDp: process.env[`TUYA_PLUG_${i}_SWITCH_DP`] ?? "1",
+      gatesSn: required(`TUYA_PLUG_${i}_GATES_SN`),
+    });
+  }
+  return plugs;
+}

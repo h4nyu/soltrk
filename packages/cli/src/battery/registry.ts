@@ -1,6 +1,8 @@
 import { BatteryDriver } from "@soltrk/core";
 import { NativeAnkerClient } from "@soltrk/anker";
+import { loadTuyaPlugs } from "@soltrk/tuya";
 import { loadConfig } from "../config";
+import { GatedBatteryDriver, gatesBySn } from "./gatedBatteryDriver";
 
 // Add a new vendor by writing one BatteryDriver adapter (implementing the
 // @soltrk/core port) and registering a factory here - the control loop and
@@ -11,6 +13,19 @@ const driverFactories: Record<string, () => BatteryDriver> = {
   anker: () => {
     const config = loadConfig();
     return new NativeAnkerClient(config.ankerEmail, config.ankerPassword, config.ankerCountry);
+  },
+  // Same underlying Anker devices, gated by a physical Tuya smart plug for
+  // whichever sn(s) have a TUYA_PLUG_*_GATES_SN entry - see
+  // data/priority.json (set a device's "vendor" field to this) and
+  // gatedBatteryDriver.ts.
+  "anker-gated": () => {
+    const config = loadConfig();
+    return new GatedBatteryDriver(
+      getDriver("anker"),
+      gatesBySn(loadTuyaPlugs()),
+      config.chargeLimitMin,
+      config.gatedCriticalSocPercent,
+    );
   },
 };
 

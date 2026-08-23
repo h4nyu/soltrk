@@ -19,6 +19,15 @@ async function main() {
   });
   device.on("error", (err) => console.error("error:", err.message));
   await device.connect();
+  // Some devices (e.g. plain smart plugs) only report dps on explicit
+  // request, not proactively on every state change - request the current
+  // snapshot immediately so a device that never pushes still shows something.
+  try {
+    const initial = await device.get({ schema: true });
+    console.log(new Date().toISOString(), "(initial get)", JSON.stringify(initial));
+  } catch (err) {
+    console.error("initial get failed:", (err as Error).message);
+  }
   console.log("Connected. Watching dp updates for 30s (Ctrl+C to stop earlier)...");
   setTimeout(() => {
     device.disconnect();

@@ -120,7 +120,13 @@ out to the grid - but skip the disclaimers if you already know this.
   to read or change a device's TOU schedule. This also means: if a unit's
   TOU schedule is "ピーク"/"ミッドピーク" all day, soltrk's own charge
   commands when solar *is* available may be blocked the same way - not yet
-  confirmed either way in daylight.
+  confirmed either way in daylight. Dynamic TOU control from soltrk itself
+  isn't possible either: the schedule-change command was reverse engineered
+  (`encodeSetTouSchedule` in `protocol.ts`) but replaying it directly over
+  MQTT doesn't take effect, because the real write goes through an
+  unidentified Anker cloud HTTP endpoint, not the MQTT message alone (see
+  "Reverse engineering a new command" below). The practical workaround is
+  the physical smart-plug AC cutoff described in "One-time setup" step 6.
 - **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
   Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
   no upstream reference for this model's wire format at all, read or write,
@@ -192,7 +198,7 @@ one entry per battery:
 
 ```json
 [
-  { "sn": "APCDLRG0G06401641", "name": "冷蔵庫", "vendor": "anker", "priority": 1 },
+  { "sn": "APCDLRG0G06401641", "name": "冷蔵庫", "vendor": "anker-gated", "priority": 1 },
   { "sn": "APCDLRG0G06400974", "name": "キッチン", "vendor": "anker", "priority": 2 }
 ]
 ```
@@ -201,7 +207,9 @@ Lower `priority` number charges first; a unit is skipped once its SOC hits
 100%. Edit the file directly (e.g. reorder the numbers) to change it; `name`
 is just for readable logs/`status` output, and `vendor` selects which
 adapter in `packages/cli/src/battery/registry.ts` talks to that serial
-(defaults to `"anker"` if omitted - see Architecture below).
+(defaults to `"anker"` if omitted - see Architecture below). Use
+`"anker-gated"` for any sn with a physical AC-cutoff smart plug configured
+(step 6).
 
 ### 5. Run
 
@@ -215,6 +223,54 @@ Query current state any time with either:
 cat data/state.json
 docker compose exec soltrk soltrk status
 ```
+
+### 6. Physical AC cutoff via Tuya smart plug (optional, per-battery)
+
+Since neither `setChargeLimit` nor the TOU schedule can be driven reliably
+from software (see "Known caveats" above), a plain Tuya smart plug wired in
+series with a battery's AC input cable gives a hard on/off gate that
+doesn't depend on the Anker device's firmware at all - if there's no AC
+power at the wall, the device can't charge, full stop.
+
+Onboard the plug the same way as the GTB-800 units (Tuya IoT Platform
+"Link App Account", API Explorer for the `local_key`, router DHCP list for
+the LAN `ip` - see step 1), then confirm its switch dp with the same
+`discover.ts` script used for the panels:
+
+```
+docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>
+```
+
+`"1"` is the standard boolean on/off dp for most Tuya plugs and is the
+default if `TUYA_PLUG_*_SWITCH_DP` is unset. Then add to `.env`:
+
+```
+TUYA_PLUG_1_ID=...
+TUYA_PLUG_1_KEY=...
+TUYA_PLUG_1_IP=...
+TUYA_PLUG_1_GATES_SN=APCDLRG0G06401641   # the battery this plug's output feeds
+```
+
+and set that battery's `vendor` to `"anker-gated"` in `data/priority.json`
+(step 4). `GatedBatteryDriver` (`packages/cli/src/battery/gatedBatteryDriver.ts`)
+then cuts the plug whenever the allocator deprioritizes that battery, and
+restores it (plus still sending the normal wattage command for fine
+control) whenever it's the active charging target - any sn with no
+`TUYA_PLUG_*_GATES_SN` entry is unaffected and behaves exactly like plain
+`"anker"`.
+
+**Safety floor:** a gated device can be cut off from AC for hours at a
+time (no solar, deprioritized) with nothing else stopping its own battery
+from draining down to zero while it keeps powering whatever it's actually
+plugged into (e.g. a real refrigerator). Below `GATED_CRITICAL_SOC_PERCENT`
+(default 6%), `GatedBatteryDriver` opens the gate and charges at whatever
+wattage it's given (normally the hardware's own minimum) regardless of
+solar availability or priority order - this overrides everything else.
+
+Confirmed live: with 冷蔵庫's TOU schedule set to "オフピーク" (which would
+otherwise keep charging from AC no matter what wattage is requested - see
+"Known caveats"), restarting with the gate in place correctly cut AC and
+`acInputWatts` in `data/state.json` dropped from ~198W to 0.
 
 ## Architecture: adding another battery/charger vendor
 
