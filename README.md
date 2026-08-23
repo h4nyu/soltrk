@@ -79,10 +79,30 @@ docker compose up -d anker-driver
 curl http://localhost:8000/devices
 ```
 
-Put the serials you want managed, in charge priority order, into
-`ANKER_PRIORITY_SNS`.
+`ANKER_PRIORITY_SNS` only seeds the *initial* priority order (see below) -
+list the serials there in the order you want them charged.
 
-### 4. Run
+### 4. Priority order (`data/priority.json`)
+
+Charge priority isn't fixed at startup: `soltrk` re-reads
+`data/priority.json` every cycle, so it can be changed live without
+restarting anything. It's seeded from `ANKER_PRIORITY_SNS` on first run,
+one entry per battery:
+
+```json
+[
+  { "sn": "APCDLRG0G06401641", "name": "冷蔵庫", "vendor": "anker", "priority": 1 },
+  { "sn": "APCDLRG0G06400974", "name": "キッチン", "vendor": "anker", "priority": 2 }
+]
+```
+
+Lower `priority` number charges first; a unit is skipped once its SOC hits
+100%. Edit the file directly (e.g. reorder the numbers) to change it; `name`
+is just for readable logs/`status` output, and `vendor` selects which
+adapter in `src/battery/registry.ts` talks to that serial (defaults to
+`"anker"` if omitted - see Architecture below).
+
+### 5. Run
 
 ```
 docker compose up -d
@@ -94,6 +114,27 @@ Query current state any time with either:
 cat data/state.json
 docker compose exec soltrk npx tsx src/index.ts status
 ```
+
+## Architecture: adding another battery/charger vendor
+
+The control loop and allocator never talk to `AnkerClient` directly - they
+depend only on the `BatteryDriver` port (`src/battery/BatteryDriver.ts`):
+
+```ts
+interface BatteryDriver {
+  getStatus(sn: string): Promise<{ batterySoc?: number } | undefined>;
+  setChargeLimit(sn: string, watts: number): Promise<boolean>;
+}
+```
+
+`AnkerClient` is the one adapter implementing it today (talking to the
+separate Python `anker-driver` service, since that's where the only working
+reverse-engineered protocol lib lives - a vendor adapter is free to be a
+thin HTTP client, a driver process of its own, or call a library directly,
+whatever that vendor needs). To add a second brand: write a new class
+implementing `BatteryDriver`, register it in `src/battery/registry.ts`
+under a vendor key, and tag that battery's `data/priority.json` entry with
+`"vendor": "<your key>"`. No changes needed in `loop.ts` or `allocator.ts`.
 
 ## Development
 
