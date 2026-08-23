@@ -7,6 +7,7 @@ const GATED_SN = "gated-sn";
 const OTHER_SN = "other-sn";
 const OFF_WATTS = 100;
 const CRITICAL_SOC_PERCENT = 6;
+const RECOVERY_SOC_PERCENT = 20;
 
 function fakeInner(batterySoc?: number): BatteryDriver & { calls: { sn: string; watts: number }[] } {
   return {
@@ -19,6 +20,21 @@ function fakeInner(batterySoc?: number): BatteryDriver & { calls: { sn: string; 
       return true;
     },
   };
+}
+
+// Like fakeInner, but the SOC can be changed between calls - for tests that
+// simulate several poll cycles in a row with the battery's charge moving.
+function fakeInnerWithMutableSoc(): BatteryDriver & { soc: number | undefined } {
+  const state = {
+    soc: undefined as number | undefined,
+    async getStatus(): Promise<BatteryStatus | undefined> {
+      return state.soc === undefined ? undefined : { batterySoc: state.soc };
+    },
+    async setChargeLimit(): Promise<boolean> {
+      return true;
+    },
+  };
+  return state;
 }
 
 function fakeGate(): PowerGate & { calls: boolean[] } {
@@ -34,7 +50,7 @@ function fakeGate(): PowerGate & { calls: boolean[] } {
 describe("GatedBatteryDriver", () => {
   test("passes through unchanged for an sn with no configured plug", async () => {
     const inner = fakeInner();
-    const driver = new GatedBatteryDriver(inner, new Map(), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(inner, new Map(), OFF_WATTS, CRITICAL_SOC_PERCENT, RECOVERY_SOC_PERCENT);
 
     const ok = await driver.setChargeLimit(OTHER_SN, 500);
 
@@ -45,7 +61,13 @@ describe("GatedBatteryDriver", () => {
   test("cuts the plug and skips the wattage command at/below offWatts", async () => {
     const inner = fakeInner(50);
     const gate = fakeGate();
-    const driver = new GatedBatteryDriver(inner, new Map([[GATED_SN, gate]]), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
 
     const ok = await driver.setChargeLimit(GATED_SN, OFF_WATTS);
 
@@ -57,7 +79,13 @@ describe("GatedBatteryDriver", () => {
   test("opens the plug then still sends the wattage command above offWatts", async () => {
     const inner = fakeInner(50);
     const gate = fakeGate();
-    const driver = new GatedBatteryDriver(inner, new Map([[GATED_SN, gate]]), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
 
     const ok = await driver.setChargeLimit(GATED_SN, 300);
 
@@ -69,7 +97,13 @@ describe("GatedBatteryDriver", () => {
   test("fails without touching the inner driver when the plug command fails", async () => {
     const inner = fakeInner(50);
     const gate: PowerGate = { setOn: async () => false };
-    const driver = new GatedBatteryDriver(inner, new Map([[GATED_SN, gate]]), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
 
     const ok = await driver.setChargeLimit(GATED_SN, 300);
 
@@ -80,7 +114,13 @@ describe("GatedBatteryDriver", () => {
   test("forces the gate on and charges at the requested (minimum) wattage when SOC is at the critical floor", async () => {
     const inner = fakeInner(CRITICAL_SOC_PERCENT);
     const gate = fakeGate();
-    const driver = new GatedBatteryDriver(inner, new Map([[GATED_SN, gate]]), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
 
     const ok = await driver.setChargeLimit(GATED_SN, OFF_WATTS);
 
@@ -92,7 +132,13 @@ describe("GatedBatteryDriver", () => {
   test("does not force the gate on above the critical SOC floor", async () => {
     const inner = fakeInner(CRITICAL_SOC_PERCENT + 1);
     const gate = fakeGate();
-    const driver = new GatedBatteryDriver(inner, new Map([[GATED_SN, gate]]), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
 
     const ok = await driver.setChargeLimit(GATED_SN, OFF_WATTS);
 
@@ -104,12 +150,64 @@ describe("GatedBatteryDriver", () => {
   test("does not force the gate on when SOC is unknown", async () => {
     const inner = fakeInner(undefined);
     const gate = fakeGate();
-    const driver = new GatedBatteryDriver(inner, new Map([[GATED_SN, gate]]), OFF_WATTS, CRITICAL_SOC_PERCENT);
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
 
     const ok = await driver.setChargeLimit(GATED_SN, OFF_WATTS);
 
     assert.equal(ok, true);
     assert.deepEqual(gate.calls, [false]);
     assert.deepEqual(inner.calls, []);
+  });
+
+  test("stays forced on between the critical and recovery thresholds (hysteresis), then releases at recovery", async () => {
+    const inner = fakeInnerWithMutableSoc();
+    const gate = fakeGate();
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
+
+    inner.soc = CRITICAL_SOC_PERCENT; // dips to the floor: forces on
+    await driver.setChargeLimit(GATED_SN, OFF_WATTS);
+
+    inner.soc = CRITICAL_SOC_PERCENT + 5; // recovering, but still below recovery threshold
+    await driver.setChargeLimit(GATED_SN, OFF_WATTS);
+
+    inner.soc = RECOVERY_SOC_PERCENT - 1; // just under recovery: still forced
+    await driver.setChargeLimit(GATED_SN, OFF_WATTS);
+
+    inner.soc = RECOVERY_SOC_PERCENT; // reaches recovery: released, back to normal (off at offWatts)
+    await driver.setChargeLimit(GATED_SN, OFF_WATTS);
+
+    assert.deepEqual(gate.calls, [true, true, true, false]);
+  });
+
+  test("keeps the last forced decision when SOC is unreadable mid-recovery", async () => {
+    const inner = fakeInnerWithMutableSoc();
+    const gate = fakeGate();
+    const driver = new GatedBatteryDriver(
+      inner,
+      new Map([[GATED_SN, gate]]),
+      OFF_WATTS,
+      CRITICAL_SOC_PERCENT,
+      RECOVERY_SOC_PERCENT,
+    );
+
+    inner.soc = CRITICAL_SOC_PERCENT; // forces on
+    await driver.setChargeLimit(GATED_SN, OFF_WATTS);
+
+    inner.soc = undefined; // status read fails this cycle
+    await driver.setChargeLimit(GATED_SN, OFF_WATTS);
+
+    assert.deepEqual(gate.calls, [true, true]);
   });
 });

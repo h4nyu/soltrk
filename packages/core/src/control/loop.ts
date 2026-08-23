@@ -42,7 +42,6 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
   const { solar, getDriver } = deps;
   await solar.connect();
 
-  const lastSent: Record<string, number> = {};
   let stopping = false;
   const stop = () => {
     stopping = true;
@@ -84,11 +83,12 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const deviceStates: StateSnapshot["devices"] = [];
     for (const [i, sn] of prioritySns.entries()) {
       const target = targets[sn];
-      let ok: boolean | undefined;
-      if (lastSent[sn] !== target) {
-        ok = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target);
-        if (ok) lastSent[sn] = target;
-      }
+      // Sent every cycle, even when target is unchanged from last time: a
+      // gated device's actual on/off decision (see GatedBatteryDriver) can
+      // depend on live SOC even when the requested wattage itself doesn't
+      // change, so skipping unchanged-looking calls would make that check
+      // silently stop running.
+      const ok = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target);
       deviceStates.push({
         sn,
         name: nameBySn[sn],

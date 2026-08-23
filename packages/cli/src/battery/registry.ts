@@ -25,6 +25,7 @@ const driverFactories: Record<string, () => BatteryDriver> = {
       gatesBySn(loadTuyaPlugs()),
       config.chargeLimitMin,
       config.gatedCriticalSocPercent,
+      config.gatedRecoverySocPercent,
     );
   },
 };
