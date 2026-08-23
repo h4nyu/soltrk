@@ -1,7 +1,29 @@
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required env var: ${name}`);
-  return value;
+import { existsSync, readFileSync } from "fs";
+
+// Tied to the ./data volume mount in docker-compose.yml, like state.json
+// and priority.json. Unlike those, this holds secrets (Tuya local_keys),
+// so it lives under the already git-ignored data/ dir rather than .env -
+// device/plug IDs and keys change often enough (adding a plug, re-linking
+// a device) that maintaining them as numbered env vars in both .env and
+// docker-compose.yml's x-env block (with its shell-escaping footguns for
+// keys containing `$`) was worse than a plain JSON file. Read once at
+// process start, same as the env vars it replaced - editing it still needs
+// a restart to take effect, just not a docker-compose config change.
+const TUYA_CONFIG_PATH = "./data/tuya.json";
+
+type TuyaConfigFile = {
+  devices?: Array<{ name?: string; id: string; key: string; powerDp?: string; powerScale?: number }>;
+  plugs?: Array<{ id: string; key: string; switchDp?: string; gatesSn: string }>;
+};
+
+function readTuyaConfigFile(): TuyaConfigFile {
+  if (!existsSync(TUYA_CONFIG_PATH)) {
+    throw new Error(
+      `Missing ${TUYA_CONFIG_PATH} - see README "One-time setup" for its format ` +
+        `({"devices": [{"id", "key", ...}], "plugs": [{"id", "key", "gatesSn", ...}]}).`,
+    );
+  }
+  return JSON.parse(readFileSync(TUYA_CONFIG_PATH, "utf-8"));
 }
 
 export type TuyaDeviceConfig = {
@@ -20,22 +42,16 @@ export type TuyaDeviceConfig = {
 };
 
 export function loadTuyaDevices(): TuyaDeviceConfig[] {
-  const devices: TuyaDeviceConfig[] = [];
-  for (let i = 1; ; i++) {
-    const id = process.env[`TUYA_DEVICE_${i}_ID`];
-    if (!id) break;
-    devices.push({
-      name: process.env[`TUYA_DEVICE_${i}_NAME`] ?? `gtb800-${i}`,
-      id,
-      key: required(`TUYA_DEVICE_${i}_KEY`),
-      powerDp: process.env[`TUYA_DEVICE_${i}_POWER_DP`] ?? "19",
-      powerScale: Number(process.env[`TUYA_DEVICE_${i}_POWER_SCALE`] ?? "10"),
-    });
-  }
+  const file = readTuyaConfigFile();
+  const devices = (file.devices ?? []).map((d, i) => ({
+    name: d.name ?? `gtb800-${i + 1}`,
+    id: d.id,
+    key: d.key,
+    powerDp: d.powerDp ?? "19",
+    powerScale: d.powerScale ?? 10,
+  }));
   if (devices.length === 0) {
-    throw new Error(
-      "No Tuya devices configured. Set TUYA_DEVICE_1_ID / _KEY (and _2_* for the second GTB-800).",
-    );
+    throw new Error(`No Tuya devices configured in ${TUYA_CONFIG_PATH}'s "devices" array.`);
   }
   return devices;
 }
@@ -55,20 +71,15 @@ export type TuyaPlugConfig = {
 
 /**
  * Unlike loadTuyaDevices(), an empty result is valid here - not every
- * battery needs a physical AC cutoff, so no TUYA_PLUG_* vars being set just
- * means no device is gated.
+ * battery needs a physical AC cutoff, so no "plugs" entry being present
+ * just means no device is gated.
  */
 export function loadTuyaPlugs(): TuyaPlugConfig[] {
-  const plugs: TuyaPlugConfig[] = [];
-  for (let i = 1; ; i++) {
-    const id = process.env[`TUYA_PLUG_${i}_ID`];
-    if (!id) break;
-    plugs.push({
-      id,
-      key: required(`TUYA_PLUG_${i}_KEY`),
-      switchDp: process.env[`TUYA_PLUG_${i}_SWITCH_DP`] ?? "1",
-      gatesSn: required(`TUYA_PLUG_${i}_GATES_SN`),
-    });
-  }
-  return plugs;
+  const file = readTuyaConfigFile();
+  return (file.plugs ?? []).map((p) => ({
+    id: p.id,
+    key: p.key,
+    switchDp: p.switchDp ?? "1",
+    gatesSn: p.gatesSn,
+  }));
 }

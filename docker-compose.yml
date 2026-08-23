@@ -4,10 +4,6 @@ x-env: &env
   ANKER_PASSWORD: &ANKER_PASSWORD ${ANKER_PASSWORD}
   # Priority order for sequential charging, highest priority first (comma-separated serials).
   ANKER_PRIORITY_SNS: &ANKER_PRIORITY_SNS ${ANKER_PRIORITY_SNS}
-  TUYA_DEVICE_1_ID: &TUYA_DEVICE_1_ID ${TUYA_DEVICE_1_ID}
-  TUYA_DEVICE_1_KEY: &TUYA_DEVICE_1_KEY ${TUYA_DEVICE_1_KEY}
-  TUYA_DEVICE_2_ID: &TUYA_DEVICE_2_ID ${TUYA_DEVICE_2_ID}
-  TUYA_DEVICE_2_KEY: &TUYA_DEVICE_2_KEY ${TUYA_DEVICE_2_KEY}
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
@@ -17,28 +13,6 @@ x-env: &env
   # of solar (fridge compressor, routers, etc). 0 unless you know better -
   # only raise it to a value the house never dips below.
   HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
-  TUYA_DEVICE_1_NAME: &TUYA_DEVICE_1_NAME ${TUYA_DEVICE_1_NAME:-gtb800-1}
-  TUYA_DEVICE_2_NAME: &TUYA_DEVICE_2_NAME ${TUYA_DEVICE_2_NAME:-gtb800-2}
-  # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>`.
-  TUYA_DEVICE_1_POWER_DP: &TUYA_DEVICE_1_POWER_DP ${TUYA_DEVICE_1_POWER_DP:-19}
-  TUYA_DEVICE_1_POWER_SCALE: &TUYA_DEVICE_1_POWER_SCALE ${TUYA_DEVICE_1_POWER_SCALE:-10}
-  TUYA_DEVICE_2_POWER_DP: &TUYA_DEVICE_2_POWER_DP ${TUYA_DEVICE_2_POWER_DP:-19}
-  TUYA_DEVICE_2_POWER_SCALE: &TUYA_DEVICE_2_POWER_SCALE ${TUYA_DEVICE_2_POWER_SCALE:-10}
-  # Physical AC-cutoff smart plug(s) - see README "One-time setup" step 6.
-  # Truly optional (unlike the GTB-800 devices above): no TUYA_PLUG_1_ID means
-  # no battery is gated, and loadTuyaPlugs() treats that as valid.
-  TUYA_PLUG_1_ID: &TUYA_PLUG_1_ID ${TUYA_PLUG_1_ID:-}
-  TUYA_PLUG_1_KEY: &TUYA_PLUG_1_KEY ${TUYA_PLUG_1_KEY:-}
-  TUYA_PLUG_1_GATES_SN: &TUYA_PLUG_1_GATES_SN ${TUYA_PLUG_1_GATES_SN:-}
-  TUYA_PLUG_1_SWITCH_DP: &TUYA_PLUG_1_SWITCH_DP ${TUYA_PLUG_1_SWITCH_DP:-1}
-  TUYA_PLUG_2_ID: &TUYA_PLUG_2_ID ${TUYA_PLUG_2_ID:-}
-  TUYA_PLUG_2_KEY: &TUYA_PLUG_2_KEY ${TUYA_PLUG_2_KEY:-}
-  TUYA_PLUG_2_GATES_SN: &TUYA_PLUG_2_GATES_SN ${TUYA_PLUG_2_GATES_SN:-}
-  TUYA_PLUG_2_SWITCH_DP: &TUYA_PLUG_2_SWITCH_DP ${TUYA_PLUG_2_SWITCH_DP:-1}
-  TUYA_PLUG_3_ID: &TUYA_PLUG_3_ID ${TUYA_PLUG_3_ID:-}
-  TUYA_PLUG_3_KEY: &TUYA_PLUG_3_KEY ${TUYA_PLUG_3_KEY:-}
-  TUYA_PLUG_3_GATES_SN: &TUYA_PLUG_3_GATES_SN ${TUYA_PLUG_3_GATES_SN:-}
-  TUYA_PLUG_3_SWITCH_DP: &TUYA_PLUG_3_SWITCH_DP ${TUYA_PLUG_3_SWITCH_DP:-1}
   # Below this SOC, a gated device charges at minimum rate regardless of
   # solar/priority - the AC cutoff must never fully drain a battery powering
   # something that can't lose power (e.g. an actual refrigerator).
@@ -51,7 +25,12 @@ x-env: &env
   # path are fixed implementation details (a constant endpoint, and a path
   # matching the ./data volume mount) - they're hardcoded directly in
   # packages/cli/src/config.ts / packages/anker/src/httpApi.ts instead of
-  # being threaded through as env vars.
+  # being threaded through as env vars. Tuya device/plug config (id, key,
+  # powerDp/Scale, switchDp, gatesSn) similarly isn't here - it lives in
+  # data/tuya.json (git-ignored, see README "One-time setup"), since those
+  # values change often enough (adding a plug, re-linking a device) that
+  # numbered env vars plus docker-compose's shell-escaping footguns for
+  # keys containing `$` were worse than a plain JSON file.
 
 services:
   soltrk:
