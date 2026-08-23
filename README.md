@@ -46,8 +46,9 @@ adapters), the same shape as the sibling `picomanager` project:
 - **Loop**: every `POLL_INTERVAL_MS`, `soltrk` reads total solar watts, picks
   the highest-priority Anker unit that isn't full yet, and sets its charge
   limit to the solar wattage rounded *up* to the next 100W step. Every other
-  unit is told to stop (`0W`) so it doesn't also trickle-charge from the grid
-  in parallel.
+  unit is told to charge at the hardware's minimum (100W - there's no real
+  "0W/off", see below), so it never gets left at a stale higher limit from
+  when it was previously the active unit.
 
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, not a certified zero-export device. The charger is deliberately
@@ -59,7 +60,7 @@ out to the grid - but skip the disclaimers if you already know this.
 
 ## Known caveats
 
-- **200W floor, rounds up**: below ~200W of solar (e.g. dawn/dusk), the
+- **100W floor, rounds up**: below ~100W of solar (e.g. dawn/dusk), the
   charger can't be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS`
   (default 150W) is the cutoff below which we stop trying and just let panel
   output do whatever it does; above that, and up through every 100W step, the
@@ -71,11 +72,25 @@ out to the grid - but skip the disclaimers if you already know this.
   - that much of solar is treated as already spoken for and doesn't need
   covering by the charger, shrinking the overshoot. Leave at `0` (default) if
   unsure; setting it too high is what could actually cause backfeed.
-- **`0W` = "stop charging" is unverified.** 100W/200W/300W have all been
-  confirmed against the Anker app's own displayed setting on real hardware,
-  but `0`'s effect specifically hasn't been tested. Test it once manually
-  (watch `docker compose logs -f soltrk` and the unit's own display) before
-  trusting the "deprioritized units stay idle" behavior.
+- **`setChargeLimit` cannot fully stop charging by itself.** 100-1200W in
+  100W steps all work as expected, confirmed against the Anker app's own
+  displayed "交流電池充電" setting on real hardware, but that setting has no
+  "0" - values below 100W get silently clamped up to the 100W floor by the
+  device firmware rather than rejected (`chargeLimitMin`/`Max` in
+  `config.ts` are set to the app's real 100-1200W range for this reason).
+  Worse, on real hardware even a valid low wattage request was fully
+  ignored whenever the device's own **TOU (Time of Use) schedule** was in
+  its "オフピーク" period, which always charges from AC regardless of any
+  wattage soltrk requests - soltrk's charge-limit command and the device's
+  own TOU schedule are two independent layers, and TOU wins. For a
+  deprioritized unit's charging to actually stop, its TOU schedule must be
+  in "ピーク" (battery-priority, falls back to grid only once empty - no
+  charging) or "ミッドピーク" (grid pass-through, no charging) for that
+  time period, set manually in the Anker app - soltrk has no known command
+  to read or change a device's TOU schedule. This also means: if a unit's
+  TOU schedule is "ピーク"/"ミッドピーク" all day, soltrk's own charge
+  commands when solar *is* available may be blocked the same way - not yet
+  confirmed either way in daylight.
 - **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
   Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
   no upstream reference for this model's wire format at all, read or write,

@@ -30,8 +30,13 @@ export function loadConfig() {
       .filter(Boolean)
       .map((sn, i) => ({ sn, vendor: "anker", priority: i + 1 })),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 15_000),
-    chargeLimitMin: 200,
-    chargeLimitMax: 1000,
+    // Matches the Anker app's own "交流電池充電" slider range (100-1200W,
+    // 100W steps) - values outside this range get silently clamped by the
+    // device firmware rather than rejected (see control/allocator.ts and
+    // the README for why this means true "0W / stop charging" isn't
+    // achievable via this setting).
+    chargeLimitMin: 100,
+    chargeLimitMax: 1200,
     chargeLimitStep: 100,
     // Below this, we don't ask any device to charge at all (avoids 100W-floor
     // grid-draw noise from tiny dawn/dusk solar trickle).
