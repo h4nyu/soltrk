@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from aiohttp import ClientSession
 from anker_solix_api.api import AnkerSolixApi
 from anker_solix_api.mqtt_factory import SolixMqttDeviceFactory
-from anker_solix_api.mqtt_pps import MODELS as PPS_MODELS
+from anker_solix_api.mqtt_pps import MODELS as PPS_MODELS, SolixMqttDevicePps
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -148,6 +148,21 @@ async def lifespan(_: FastAPI):
         mqtt_device = SolixMqttDeviceFactory(
             api_instance=state.api, device_sn=sn
         ).create_device()
+        if not isinstance(mqtt_device, SolixMqttDevicePps):
+            # The factory gates on anker_solix_api.mqttmap.SOLIXMQTTMAP, which
+            # A1765 (SOLIX C1000X Gen 2) is missing from even though
+            # mqtt_pps.py's own MODELS set lists it as supported - it falls
+            # back to a bare SolixMqttDevice with no set_charge_limit(). Build
+            # the PPS class directly instead. Remove once upstream adds
+            # A1765 to SOLIXMQTTMAP and the factory returns it natively.
+            _LOGGER.warning(
+                "Factory returned %s for %s (%s) instead of SolixMqttDevicePps "
+                "- constructing it directly (SOLIXMQTTMAP workaround)",
+                type(mqtt_device).__name__,
+                sn,
+                device.get("device_pn"),
+            )
+            mqtt_device = SolixMqttDevicePps(state.api, sn)
         state.devices[sn] = mqtt_device
         _LOGGER.info("Registered PPS device %s (%s)", sn, device.get("device_pn"))
 
