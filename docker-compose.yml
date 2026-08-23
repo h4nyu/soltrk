@@ -1,7 +1,43 @@
+x-env: &env
+  # required
+  ANKER_EMAIL: &ANKER_EMAIL ${ANKER_EMAIL}
+  ANKER_PASSWORD: &ANKER_PASSWORD ${ANKER_PASSWORD}
+  # Priority order for sequential charging, highest priority first (comma-separated serials).
+  ANKER_PRIORITY_SNS: &ANKER_PRIORITY_SNS ${ANKER_PRIORITY_SNS}
+  TUYA_DEVICE_1_ID: &TUYA_DEVICE_1_ID ${TUYA_DEVICE_1_ID}
+  TUYA_DEVICE_1_KEY: &TUYA_DEVICE_1_KEY ${TUYA_DEVICE_1_KEY}
+  TUYA_DEVICE_1_IP: &TUYA_DEVICE_1_IP ${TUYA_DEVICE_1_IP}
+  TUYA_DEVICE_2_ID: &TUYA_DEVICE_2_ID ${TUYA_DEVICE_2_ID}
+  TUYA_DEVICE_2_KEY: &TUYA_DEVICE_2_KEY ${TUYA_DEVICE_2_KEY}
+  TUYA_DEVICE_2_IP: &TUYA_DEVICE_2_IP ${TUYA_DEVICE_2_IP}
+
+  # optional
+  ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
+  # Comma-separated serials to expose from anker-driver; empty = auto-register every bound PPS-family device.
+  ANKER_DEVICE_SNS: &ANKER_DEVICE_SNS ${ANKER_DEVICE_SNS:-}
+  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-15000}
+  MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-150}
+  TUYA_DEVICE_1_NAME: &TUYA_DEVICE_1_NAME ${TUYA_DEVICE_1_NAME:-gtb800-1}
+  TUYA_DEVICE_2_NAME: &TUYA_DEVICE_2_NAME ${TUYA_DEVICE_2_NAME:-gtb800-2}
+  # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx src/tuya/discover.ts <id> <key> <ip>`.
+  TUYA_DEVICE_1_POWER_DP: &TUYA_DEVICE_1_POWER_DP ${TUYA_DEVICE_1_POWER_DP:-19}
+  TUYA_DEVICE_1_POWER_SCALE: &TUYA_DEVICE_1_POWER_SCALE ${TUYA_DEVICE_1_POWER_SCALE:-10}
+  TUYA_DEVICE_2_POWER_DP: &TUYA_DEVICE_2_POWER_DP ${TUYA_DEVICE_2_POWER_DP:-19}
+  TUYA_DEVICE_2_POWER_SCALE: &TUYA_DEVICE_2_POWER_SCALE ${TUYA_DEVICE_2_POWER_SCALE:-10}
+
+  # No "internal" tier here: ANKER_DRIVER_URL and the state file path are
+  # fixed implementation details (docker-compose service DNS name, and the
+  # path matching the ./data volume mount) - they're hardcoded directly in
+  # src/config.ts instead of being threaded through as env vars.
+
 services:
   anker-driver:
     build: ./anker-driver
-    env_file: .env
+    environment:
+      ANKER_EMAIL: *ANKER_EMAIL
+      ANKER_PASSWORD: *ANKER_PASSWORD
+      ANKER_COUNTRY: *ANKER_COUNTRY
+      ANKER_DEVICE_SNS: *ANKER_DEVICE_SNS
     ports:
       - "8000:8000"
     volumes:
@@ -10,9 +46,8 @@ services:
 
   soltrk:
     build: .
-    env_file: .env
     environment:
-      ANKER_DRIVER_URL: http://anker-driver:8000
+      <<: *env
     depends_on:
       - anker-driver
     volumes:

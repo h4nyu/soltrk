@@ -40,7 +40,8 @@ function loadTuyaDevices(): TuyaDeviceConfig[] {
 
 export const config = {
   tuyaDevices: loadTuyaDevices(),
-  ankerDriverUrl: process.env.ANKER_DRIVER_URL ?? "http://anker-driver:8000",
+  // Fixed docker-compose service wiring, not meant to be tuned - not read from env.
+  ankerDriverUrl: "http://anker-driver:8000",
   ankerPrioritySns: required("ANKER_PRIORITY_SNS")
     .split(",")
     .map((s) => s.trim())
@@ -52,5 +53,6 @@ export const config = {
   // Below this, we don't ask any device to charge at all (avoids 100W-floor
   // grid-draw noise from tiny dawn/dusk solar trickle).
   minSolarToChargeWatts: Number(process.env.MIN_SOLAR_TO_CHARGE_WATTS ?? 150),
-  stateFilePath: process.env.STATE_FILE_PATH ?? "./data/state.json",
+  // Fixed to match the ./data volume mount in docker-compose.yml - not read from env.
+  stateFilePath: "./data/state.json",
 };
