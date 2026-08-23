@@ -6,6 +6,7 @@ import { runLoop } from "@soltrk/core";
 import { SolarSource as TuyaSolarSource } from "@soltrk/tuya";
 import { loadConfig } from "./config";
 import { getDriver } from "./battery/registry";
+import { pinoCycleRecorder } from "./history";
 import { printStatus } from "./status";
 
 const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
@@ -32,6 +33,7 @@ program
       minSolarToChargeWatts: config.minSolarToChargeWatts,
       houseStandbyWatts: config.houseStandbyWatts,
       stateFilePath: config.stateFilePath,
+      recordHistory: pinoCycleRecorder(),
     }).catch((err) => {
       console.error(err);
       process.exit(1);
