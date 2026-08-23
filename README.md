@@ -71,11 +71,9 @@ out to the grid - but skip the disclaimers if you already know this.
   - that much of solar is treated as already spoken for and doesn't need
   covering by the charger, shrinking the overshoot. Leave at `0` (default) if
   unsure; setting it too high is what could actually cause backfeed.
-- **`0W` = "stop charging" is unverified.** 100W/200W/300W have all been
-  confirmed against the Anker app's own displayed setting on real hardware,
-  but `0`'s effect specifically hasn't been tested. Test it once manually
-  (watch `docker compose logs -f soltrk` and the unit's own display) before
-  trusting the "deprioritized units stay idle" behavior.
+- **`0W`, 100W/200W/300W all confirmed** against the Anker app's own
+  displayed "交流電池充電" setting on real hardware - deprioritized units are
+  correctly told to stop.
 - **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
   Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
   no upstream reference for this model's wire format at all, read or write,

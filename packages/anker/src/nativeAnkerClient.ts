@@ -88,9 +88,9 @@ export class NativeAnkerClient implements BatteryDriver {
       return false;
     }
     try {
-      // watts=0 is passed through as a best-effort "stop charging" signal for
-      // deprioritized devices. Real-device confirmed values so far are only
-      // 100-1000W (see README) - 0's effect is unverified.
+      // watts=0 is the "stop charging" signal for deprioritized devices,
+      // confirmed against the Anker app's displayed setting on real
+      // hardware, same as every other 100W step (see README).
       await this.mqttSession.publishCommand(device, encodeSetChargeLimit(watts));
       return true;
     } catch (err) {
