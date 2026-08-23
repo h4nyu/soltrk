@@ -6,10 +6,8 @@ x-env: &env
   ANKER_PRIORITY_SNS: &ANKER_PRIORITY_SNS ${ANKER_PRIORITY_SNS}
   TUYA_DEVICE_1_ID: &TUYA_DEVICE_1_ID ${TUYA_DEVICE_1_ID}
   TUYA_DEVICE_1_KEY: &TUYA_DEVICE_1_KEY ${TUYA_DEVICE_1_KEY}
-  TUYA_DEVICE_1_IP: &TUYA_DEVICE_1_IP ${TUYA_DEVICE_1_IP}
   TUYA_DEVICE_2_ID: &TUYA_DEVICE_2_ID ${TUYA_DEVICE_2_ID}
   TUYA_DEVICE_2_KEY: &TUYA_DEVICE_2_KEY ${TUYA_DEVICE_2_KEY}
-  TUYA_DEVICE_2_IP: &TUYA_DEVICE_2_IP ${TUYA_DEVICE_2_IP}
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
@@ -21,7 +19,7 @@ x-env: &env
   HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
   TUYA_DEVICE_1_NAME: &TUYA_DEVICE_1_NAME ${TUYA_DEVICE_1_NAME:-gtb800-1}
   TUYA_DEVICE_2_NAME: &TUYA_DEVICE_2_NAME ${TUYA_DEVICE_2_NAME:-gtb800-2}
-  # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>`.
+  # Unverified guesses - confirm with `docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>`.
   TUYA_DEVICE_1_POWER_DP: &TUYA_DEVICE_1_POWER_DP ${TUYA_DEVICE_1_POWER_DP:-19}
   TUYA_DEVICE_1_POWER_SCALE: &TUYA_DEVICE_1_POWER_SCALE ${TUYA_DEVICE_1_POWER_SCALE:-10}
   TUYA_DEVICE_2_POWER_DP: &TUYA_DEVICE_2_POWER_DP ${TUYA_DEVICE_2_POWER_DP:-19}
@@ -31,17 +29,14 @@ x-env: &env
   # no battery is gated, and loadTuyaPlugs() treats that as valid.
   TUYA_PLUG_1_ID: &TUYA_PLUG_1_ID ${TUYA_PLUG_1_ID:-}
   TUYA_PLUG_1_KEY: &TUYA_PLUG_1_KEY ${TUYA_PLUG_1_KEY:-}
-  TUYA_PLUG_1_IP: &TUYA_PLUG_1_IP ${TUYA_PLUG_1_IP:-}
   TUYA_PLUG_1_GATES_SN: &TUYA_PLUG_1_GATES_SN ${TUYA_PLUG_1_GATES_SN:-}
   TUYA_PLUG_1_SWITCH_DP: &TUYA_PLUG_1_SWITCH_DP ${TUYA_PLUG_1_SWITCH_DP:-1}
   TUYA_PLUG_2_ID: &TUYA_PLUG_2_ID ${TUYA_PLUG_2_ID:-}
   TUYA_PLUG_2_KEY: &TUYA_PLUG_2_KEY ${TUYA_PLUG_2_KEY:-}
-  TUYA_PLUG_2_IP: &TUYA_PLUG_2_IP ${TUYA_PLUG_2_IP:-}
   TUYA_PLUG_2_GATES_SN: &TUYA_PLUG_2_GATES_SN ${TUYA_PLUG_2_GATES_SN:-}
   TUYA_PLUG_2_SWITCH_DP: &TUYA_PLUG_2_SWITCH_DP ${TUYA_PLUG_2_SWITCH_DP:-1}
   TUYA_PLUG_3_ID: &TUYA_PLUG_3_ID ${TUYA_PLUG_3_ID:-}
   TUYA_PLUG_3_KEY: &TUYA_PLUG_3_KEY ${TUYA_PLUG_3_KEY:-}
-  TUYA_PLUG_3_IP: &TUYA_PLUG_3_IP ${TUYA_PLUG_3_IP:-}
   TUYA_PLUG_3_GATES_SN: &TUYA_PLUG_3_GATES_SN ${TUYA_PLUG_3_GATES_SN:-}
   TUYA_PLUG_3_SWITCH_DP: &TUYA_PLUG_3_SWITCH_DP ${TUYA_PLUG_3_SWITCH_DP:-1}
   # Below this SOC, a gated device charges at minimum rate regardless of
@@ -67,3 +62,10 @@ services:
       - ./data:/app/data
       - ./packages:/app/packages
     restart: unless-stopped
+    # Needed for Tuya UDP broadcast discovery (tuyapi's find()) - Docker
+    # Desktop's default bridge network doesn't deliver broadcast/multicast
+    # packets into the container at all (confirmed live: 0 packets received
+    # even listening for any device, same root cause as nmap host-discovery
+    # failing earlier in this project). Requires Docker Desktop's host
+    # networking support to be enabled (Settings > Resources > Network).
+    network_mode: host

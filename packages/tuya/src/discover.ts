@@ -3,21 +3,27 @@
  * can identify which dp code is instantaneous power and what scale it uses
  * before wiring it into .env. Run inside the container:
  *
- *   docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key> <ip>
+ *   docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
+ *
+ * IP is resolved dynamically via UDP broadcast (find()) - this network's
+ * devices don't have DHCP reservations, so a hardcoded IP would just go
+ * stale. Requires network_mode: host (see docker-compose.yml).
  */
 import TuyAPI from "tuyapi";
 
 async function main() {
-  const [id, key, ip] = process.argv.slice(2);
-  if (!id || !key || !ip) {
-    console.error("Usage: discover.js <id> <key> <ip>");
+  const [id, key] = process.argv.slice(2);
+  if (!id || !key) {
+    console.error("Usage: discover.js <id> <key>");
     process.exit(1);
   }
-  const device = new TuyAPI({ id, key, ip, version: "3.3" });
+  const device = new TuyAPI({ id, key, version: "3.3" });
   device.on("data", (data) => {
     console.log(new Date().toISOString(), JSON.stringify(data.dps));
   });
   device.on("error", (err) => console.error("error:", err.message));
+  console.log("Resolving IP via UDP broadcast...");
+  await device.find({ timeout: 10 });
   await device.connect();
   // Some devices (e.g. plain smart plugs) only report dps on explicit
   // request, not proactively on every state change - request the current

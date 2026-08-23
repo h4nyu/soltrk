@@ -1,3 +1,5 @@
+import { Result } from "../result";
+
 /**
  * Vendor-neutral port: business logic (the control loop, the allocator)
  * depends only on this type, never on a concrete vendor client. Adding
@@ -14,11 +16,11 @@ export type BatteryStatus = {
 };
 
 export type BatteryDriver = {
-  getStatus(sn: string): Promise<BatteryStatus | undefined>;
+  getStatus(sn: string): Promise<Result<BatteryStatus>>;
   // `acOn` is the allocator's AC-gate decision (see control/allocator.ts):
   // whether this device should be connected to AC at all this cycle.
   // Adapters without a physical gate (plain cloud drivers) just ignore it;
   // GatedBatteryDriver acts on it. Optional so those adapters' signatures
   // don't have to mention it.
-  setChargeLimit(sn: string, watts: number, acOn?: boolean): Promise<boolean>;
+  setChargeLimit(sn: string, watts: number, acOn?: boolean): Promise<Result<void>>;
 };

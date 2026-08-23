@@ -24,7 +24,7 @@ program
   .action(() => {
     const config = loadConfig();
     runLoop({
-      solar: new TuyaSolarSource(config.tuyaDevices),
+      solar: TuyaSolarSource({ configs: config.tuyaDevices }),
       getDriver,
       defaultPriority: config.defaultPriority,
       pollIntervalMs: config.pollIntervalMs,

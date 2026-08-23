@@ -1,13 +1,13 @@
-import { BatteryDriver, BatteryStatus } from "@soltrk/core";
-import { SmartPlug, TuyaPlugConfig } from "@soltrk/tuya";
+import { BatteryDriver, BatteryStatus, Result } from "@soltrk/core";
+import { TuyaPlugConfig, SmartPlug } from "@soltrk/tuya";
 
-// Minimal shape GatedBatteryDriver needs from a plug - lets tests inject a
-// fake instead of a real SmartPlug (which opens a TCP connection on every
+// Minimal shape the gated driver needs from a plug - lets tests inject a
+// fake instead of a real smart plug (which opens a TCP connection on every
 // setOn() call).
-export type PowerGate = { setOn(on: boolean): Promise<boolean> };
+export type PowerGate = { setOn(on: boolean): Promise<Result<void>> };
 
 export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
-  return new Map(plugs.map((plug) => [plug.gatesSn, new SmartPlug(plug)]));
+  return new Map(plugs.map((plug) => [plug.gatesSn, SmartPlug({ config: plug })]));
 }
 
 /**
@@ -43,41 +43,43 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * cycle regardless of whether the request changed (see loop.ts) for the
  * check to actually run.
  */
-export class GatedBatteryDriver implements BatteryDriver {
-  private readonly forcedSns = new Set<string>();
+export const GatedBatteryDriver = (props: {
+  inner: BatteryDriver;
+  plugsBySn: Map<string, PowerGate>;
+  offWatts: number;
+  criticalSocPercent: number;
+  recoverySocPercent: number;
+}): BatteryDriver => {
+  const { inner, plugsBySn, offWatts, criticalSocPercent, recoverySocPercent } = props;
+  const forcedSns = new Set<string>();
 
-  constructor(
-    private readonly inner: BatteryDriver,
-    private readonly plugsBySn: Map<string, PowerGate>,
-    private readonly offWatts: number,
-    private readonly criticalSocPercent: number,
-    private readonly recoverySocPercent: number,
-  ) {}
+  const getStatus: BatteryDriver["getStatus"] = (sn) => inner.getStatus(sn);
 
-  getStatus(sn: string): Promise<BatteryStatus | undefined> {
-    return this.inner.getStatus(sn);
-  }
+  const setChargeLimit: BatteryDriver["setChargeLimit"] = async (sn, watts, acOn) => {
+    const plug = plugsBySn.get(sn);
+    if (!plug) return inner.setChargeLimit(sn, watts);
 
-  async setChargeLimit(sn: string, watts: number, acOn?: boolean): Promise<boolean> {
-    const plug = this.plugsBySn.get(sn);
-    if (!plug) return this.inner.setChargeLimit(sn, watts);
-
-    const status = await this.inner.getStatus(sn);
-    const soc = status?.batterySoc;
+    const status = await inner.getStatus(sn);
+    const soc = status instanceof Error ? undefined : status.batterySoc;
     if (soc !== undefined) {
-      if (soc <= this.criticalSocPercent) this.forcedSns.add(sn);
-      else if (soc >= this.recoverySocPercent) this.forcedSns.delete(sn);
-      // Between the two thresholds (or if soc is unknown this cycle): leave
-      // whatever forced state was already in effect unchanged.
+      if (soc <= criticalSocPercent) forcedSns.add(sn);
+      else if (soc >= recoverySocPercent) forcedSns.delete(sn);
+      // Between the two thresholds (or if soc is unknown this cycle):
+      // leave whatever forced state was already in effect unchanged.
     }
-    const critical = this.forcedSns.has(sn);
+    const critical = forcedSns.has(sn);
     if (critical) {
-      console.warn(`[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/priority (releases at ${this.recoverySocPercent}%)`);
+      console.warn(
+        `[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/priority (releases at ${recoverySocPercent}%)`,
+      );
     }
 
-    const gateOn = critical || (acOn ?? watts > this.offWatts);
-    if (!(await plug.setOn(gateOn))) return false;
-    if (!gateOn) return true;
-    return this.inner.setChargeLimit(sn, watts);
-  }
-}
+    const gateOn = critical || (acOn ?? watts > offWatts);
+    const gateResult = await plug.setOn(gateOn);
+    if (gateResult instanceof Error) return gateResult;
+    if (!gateOn) return undefined;
+    return inner.setChargeLimit(sn, watts);
+  };
+
+  return { getStatus, setChargeLimit };
+};

@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { SolarSource } from "../solar/SolarSource";
 import { BatteryDriver, BatteryStatus } from "../battery/BatteryDriver";
+import { Result } from "../result";
 import { allocate } from "./allocator";
 import { PriorityEntry, readPriority } from "./priority";
 
@@ -71,15 +72,15 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const vendorBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.vendor ?? "anker"]));
     const totalWatts = solar.getTotalWatts();
 
-    const statusBySn: Record<string, BatteryStatus | undefined> = {};
+    const statusBySn: Record<string, Result<BatteryStatus>> = {};
     for (const sn of prioritySns) {
       statusBySn[sn] = await getDriver(vendorBySn[sn]).getStatus(sn);
     }
     const socBySn = Object.fromEntries(
-      Object.entries(statusBySn).map(([sn, s]) => [sn, s?.batterySoc]),
+      Object.entries(statusBySn).map(([sn, s]) => [sn, s instanceof Error ? undefined : s.batterySoc]),
     );
     const acInputBySn = Object.fromEntries(
-      Object.entries(statusBySn).map(([sn, s]) => [sn, s?.acInputWatts]),
+      Object.entries(statusBySn).map(([sn, s]) => [sn, s instanceof Error ? undefined : s.acInputWatts]),
     );
 
     const { watts: targets, acOn } = allocate(prioritySns, socBySn, acInputBySn, totalWatts, {
@@ -102,17 +103,18 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       // depend on live SOC even when the requested wattage itself doesn't
       // change, so skipping unchanged-looking calls would make that check
       // silently stop running.
-      const ok = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, acOn[sn]);
+      const commandResult = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, acOn[sn]);
+      const status = statusBySn[sn];
       deviceStates.push({
         sn,
         name: nameBySn[sn],
         priority: i + 1,
-        batterySoc: statusBySn[sn]?.batterySoc,
-        acInputWatts: statusBySn[sn]?.acInputWatts,
-        acOutputWatts: statusBySn[sn]?.acOutputWatts,
+        batterySoc: status instanceof Error ? undefined : status.batterySoc,
+        acInputWatts: status instanceof Error ? undefined : status.acInputWatts,
+        acOutputWatts: status instanceof Error ? undefined : status.acOutputWatts,
         targetWatts: target,
         acOn: acOn[sn],
-        lastCommandOk: ok,
+        lastCommandOk: !(commandResult instanceof Error),
       });
     }
 
