@@ -79,7 +79,7 @@ found the same way, without any TLS interception (mitmproxy etc.) - AWS IoT
 just lets our own MQTT session subscribe to the *app's own* publish topic,
 not only the device's:
 
-1. Run `docker compose run --rm app npx tsx packages/anker/src/capture-mqtt.ts <device_sn>`
+1. Run `docker compose run --rm app soltrk capture-mqtt <device_sn>`
    - this logs into the same Anker account and subscribes to both
    `dt/{app}/{pn}/{sn}/#` (device -> cloud) and `cmd/{app}/{pn}/{sn}/#`
    (app -> device, i.e. the topic the real Anker app itself publishes to).
@@ -205,7 +205,7 @@ The GTB-800's exact Tuya dp schema isn't published, so don't trust the
 them. After building once (`docker compose build`), run:
 
 ```
-docker compose run --rm app npx tsx packages/tuya/src/discover.ts <id> <key>
+docker compose run --rm app soltrk discover <id> <key>
 ```
 
 Watch which `dp` code moves in sync with the panel's actual instantaneous
@@ -222,16 +222,10 @@ truth for what exists and its default, not a separate `.env.example`.
 Create a git-ignored `.env` next to it with at least `ANKER_EMAIL` and
 `ANKER_PASSWORD`.
 
-To find your device serials, log in once via a throwaway script, e.g.:
+To find your device serials:
 
 ```
-docker compose run --rm app npx tsx -e "
-  import('@soltrk/anker').then(async (m) => {
-    const s = await m.login(process.env.ANKER_EMAIL!, process.env.ANKER_PASSWORD!, process.env.ANKER_COUNTRY ?? 'JP');
-    if (s instanceof Error) throw s;
-    console.log(await m.getBindDevices(s));
-  });
-"
+docker compose run --rm app soltrk devices
 ```
 
 **Note:** the Anker cloud allows only one active login per account at a
@@ -290,11 +284,11 @@ power at the wall, the device can't charge, full stop.
 
 Onboard the plug the same way as the GTB-800 units (Tuya IoT Platform
 "Link App Account", API Explorer for the `local_key` - see step 1; no LAN
-IP needed), then confirm its switch dp with the same `discover.ts` script
-used for the panels:
+IP needed), then confirm its switch dp with the same `soltrk discover`
+command used for the panels:
 
 ```
-docker compose run --rm app npx tsx packages/tuya/src/discover.ts <id> <key>
+docker compose run --rm app soltrk discover <id> <key>
 ```
 
 `"1"` is the standard boolean on/off dp for most Tuya plugs and is the

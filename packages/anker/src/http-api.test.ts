@@ -1,5 +1,6 @@
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
+import { Result } from "@soltrk/core";
 import { login } from "./http-api";
 
 function mockFetchOnce(status: number, body: unknown): void {
@@ -12,7 +13,7 @@ describe("login", () => {
 
     const result = await login("a@b.com", "pw", "JP");
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.equal(result.userId, "u1");
     assert.equal(result.authToken, "t1");
     assert.equal(result.countryId, "JP");
@@ -25,7 +26,7 @@ describe("login", () => {
 
     const result = await login("a@b.com", "pw", "JP");
 
-    assert.ok(result instanceof Error);
+    assert.ok(Result.isErr(result));
     assert.ok(result.kind === "http_error");
     assert.equal(result.status, 500);
 
@@ -43,7 +44,7 @@ describe("login", () => {
 
     const result = await login("a@b.com", "pw", "JP");
 
-    assert.ok(result instanceof Error);
+    assert.ok(Result.isErr(result));
     assert.ok(result.kind === "account_locked");
     assert.equal(result.code, 10019);
     assert.equal(result.retryAfterMinutes, 9);
@@ -56,7 +57,7 @@ describe("login", () => {
 
     const result = await login("a@b.com", "pw", "JP");
 
-    assert.ok(result instanceof Error);
+    assert.ok(Result.isErr(result));
     assert.ok(result.kind === "api_error");
     assert.equal(result.code, 26161);
 

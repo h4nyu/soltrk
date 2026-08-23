@@ -60,7 +60,7 @@ export const GatedBatteryDriver = (props: {
     if (!plug) return inner.setChargeLimit(sn, watts);
 
     const status = await inner.getStatus(sn);
-    const soc = status instanceof Error ? undefined : status.batterySoc;
+    const soc = Result.isErr(status) ? undefined : status.batterySoc;
     if (soc !== undefined) {
       if (soc <= criticalSocPercent) forcedSns.add(sn);
       else if (soc >= recoverySocPercent) forcedSns.delete(sn);
@@ -76,7 +76,7 @@ export const GatedBatteryDriver = (props: {
 
     const gateOn = critical || (acOn ?? watts > offWatts);
     const gateResult = await plug.setOn(gateOn);
-    if (gateResult instanceof Error) return gateResult;
+    if (Result.isErr(gateResult)) return gateResult;
     if (!gateOn) return undefined;
     return inner.setChargeLimit(sn, watts);
   };

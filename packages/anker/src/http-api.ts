@@ -131,7 +131,7 @@ export async function login(
       transaction: String(Date.now()),
     },
   );
-  if (data instanceof Error) return data;
+  if (Result.isErr(data)) return data;
   return {
     countryId,
     authToken: data.auth_token,
@@ -148,7 +148,7 @@ export async function getBindDevices(
     "power_service/v1/app/get_relate_and_bind_devices",
     {},
   );
-  if (data instanceof Error) return data;
+  if (Result.isErr(data)) return data;
   return (data.data ?? []).map((d) => ({
     ...d,
     device_pn: d.device_pn ?? (d.product_code as string | undefined) ?? "",
