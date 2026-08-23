@@ -66,7 +66,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map()).setChargeLimit(OTHER_SN, 500);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(inner.calls, [{ sn: OTHER_SN, watts: 500 }]);
   });
 
@@ -76,7 +76,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS, true);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [true]);
     assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS }]);
   });
@@ -87,7 +87,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, 500, false);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [false]);
     assert.deepEqual(inner.calls, []);
   });
@@ -98,7 +98,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [false]);
     assert.deepEqual(inner.calls, []);
   });
@@ -109,7 +109,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, 300);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [true]);
     assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: 300 }]);
   });
@@ -120,7 +120,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, 300);
 
-    assert.ok(result instanceof Error);
+    assert.ok(Result.isErr(result));
     assert.deepEqual(inner.calls, []);
   });
 
@@ -130,7 +130,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [true]);
     assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS }]);
   });
@@ -141,7 +141,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [false]);
     assert.deepEqual(inner.calls, []);
   });
@@ -152,7 +152,7 @@ describe("GatedBatteryDriver", () => {
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.ok(!(result instanceof Error));
+    assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [false]);
     assert.deepEqual(inner.calls, []);
   });

@@ -34,10 +34,10 @@ export const NativeAnkerClient = (props: { email: string; password: string; coun
   const init = async (): Promise<Result<void, AnkerError | Error>> => {
     try {
       const session = await login(email, password, country);
-      if (session instanceof Error) return session;
+      if (Result.isErr(session)) return session;
 
       const devices = await getBindDevices(session);
-      if (devices instanceof Error) return devices;
+      if (Result.isErr(devices)) return devices;
       const supported = devices.filter((d) => SUPPORTED_MODELS.has(d.device_pn));
       for (const d of supported) devicesBySn.set(d.device_sn, d);
       if (supported.length === 0) {
@@ -45,7 +45,7 @@ export const NativeAnkerClient = (props: { email: string; password: string; coun
       }
 
       const mqttInfo = await getUserMqttInfo(session);
-      if (mqttInfo instanceof Error) return mqttInfo;
+      if (Result.isErr(mqttInfo)) return mqttInfo;
 
       mqttSession = new AnkerMqttSession(session, mqttInfo);
       await mqttSession.connect();
@@ -63,7 +63,7 @@ export const NativeAnkerClient = (props: { email: string; password: string; coun
   const initWithRetry = async (): Promise<void> => {
     for (;;) {
       const result = await init();
-      if (!(result instanceof Error)) {
+      if (Result.isOk(result)) {
         initialized = true;
         console.log("[anker] initialized");
         return;

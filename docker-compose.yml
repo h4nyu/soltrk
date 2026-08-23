@@ -34,19 +34,34 @@ x-env: &env
   # already the live source of truth, so requiring an env var too, forever,
   # just for a one-time seed was redundant.
 
+# Common config shared by both services below - same pattern as the sibling
+# picomanager project's `x-app` anchor.
+x-app: &app
+  image: soltrk:latest
+  build: .
+  environment:
+    <<: *env
+  volumes:
+    - ./data:/app/data
+    - ./packages:/app/packages
+  # Needed for Tuya UDP broadcast discovery (tuyapi's find()) - Docker
+  # Desktop's default bridge network doesn't deliver broadcast/multicast
+  # packets into the container at all (confirmed live: 0 packets received
+  # even listening for any device, same root cause as nmap host-discovery
+  # failing earlier in this project). Requires Docker Desktop's host
+  # networking support to be enabled (Settings > Resources > Network).
+  network_mode: host
+
 services:
+  # No `command` - never `up`, only `run --rm` for one-off dev work (tsc,
+  # tests, discover.ts, capture-mqtt.ts, ...), e.g.:
+  #   docker compose run --rm app npx tsc --noEmit
+  #   docker compose run --rm app npm test
+  app:
+    <<: *app
+
+  # The actual running system - `command` starts the control loop.
   soltrk:
-    build: .
-    environment:
-      <<: *env
-    volumes:
-      - ./data:/app/data
-      - ./packages:/app/packages
+    <<: *app
+    command: ["npx", "tsx", "packages/cli/src/index.ts", "run"]
     restart: unless-stopped
-    # Needed for Tuya UDP broadcast discovery (tuyapi's find()) - Docker
-    # Desktop's default bridge network doesn't deliver broadcast/multicast
-    # packets into the container at all (confirmed live: 0 packets received
-    # even listening for any device, same root cause as nmap host-discovery
-    # failing earlier in this project). Requires Docker Desktop's host
-    # networking support to be enabled (Settings > Resources > Network).
-    network_mode: host

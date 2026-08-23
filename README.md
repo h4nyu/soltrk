@@ -25,8 +25,16 @@ adapters), the same shape as the sibling `picomanager` project:
   `Infrastructure()` factory), and the CLI entrypoint (`index.ts`, a
   [commander](https://github.com/tj/commander.js)-based `run`/`status` CLI
   registered as the `soltrk` bin - runnable directly inside the container,
-  e.g. `docker compose exec soltrk soltrk --help`). Only `run` reads
+  e.g. `docker compose run --rm app soltrk --help`). Only `run` reads
   Anker/Tuya env vars; `--help`, `--version`, and `status` work without them.
+
+`docker-compose.yml` defines two services off the same image and `x-app`
+anchor (same pattern as picomanager): `app` has no `command` and is never
+`up` - it's for one-off dev work only (`docker compose run --rm app
+<anything>`, e.g. `npx tsc --noEmit`, `npm test`, `soltrk --help`), so a
+throwaway container per invocation, nothing left running to accidentally
+restart mid-edit. `soltrk` is the real system: its `command` runs the
+control loop, and it's the one you `docker compose up -d soltrk`.
 
 ## How it works
 
@@ -71,7 +79,7 @@ found the same way, without any TLS interception (mitmproxy etc.) - AWS IoT
 just lets our own MQTT session subscribe to the *app's own* publish topic,
 not only the device's:
 
-1. Run `docker compose run --rm soltrk npx tsx packages/anker/src/capture-mqtt.ts <device_sn>`
+1. Run `docker compose run --rm app soltrk capture-mqtt <device_sn>`
    - this logs into the same Anker account and subscribes to both
    `dt/{app}/{pn}/{sn}/#` (device -> cloud) and `cmd/{app}/{pn}/{sn}/#`
    (app -> device, i.e. the topic the real Anker app itself publishes to).
@@ -194,10 +202,10 @@ and can start empty/omitted.
 The GTB-800's exact Tuya dp schema isn't published, so don't trust the
 `powerDp`/`powerScale` defaults (`"19"`/`10`) blindly - add `"powerDp"` /
 `"powerScale"` fields to a device's entry in `data/tuya.json` to override
-them. After building once (`docker compose build soltrk`), run:
+them. After building once (`docker compose build`), run:
 
 ```
-docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
+docker compose run --rm app soltrk discover <id> <key>
 ```
 
 Watch which `dp` code moves in sync with the panel's actual instantaneous
@@ -214,16 +222,10 @@ truth for what exists and its default, not a separate `.env.example`.
 Create a git-ignored `.env` next to it with at least `ANKER_EMAIL` and
 `ANKER_PASSWORD`.
 
-To find your device serials, log in once via a throwaway script, e.g.:
+To find your device serials:
 
 ```
-docker compose run --rm soltrk npx tsx -e "
-  import('@soltrk/anker').then(async (m) => {
-    const s = await m.login(process.env.ANKER_EMAIL!, process.env.ANKER_PASSWORD!, process.env.ANKER_COUNTRY ?? 'JP');
-    if (s instanceof Error) throw s;
-    console.log(await m.getBindDevices(s));
-  });
-"
+docker compose run --rm app soltrk devices
 ```
 
 **Note:** the Anker cloud allows only one active login per account at a
@@ -258,7 +260,7 @@ adapter in `packages/cli/src/battery/registry.ts` talks to that serial
 ### 5. Run
 
 ```
-docker compose up -d
+docker compose up -d soltrk
 ```
 
 Query current state any time with either:
@@ -267,6 +269,10 @@ Query current state any time with either:
 cat data/state.json
 docker compose exec soltrk soltrk status
 ```
+
+Code changes need an explicit `docker compose restart soltrk` to take
+effect - nothing reloads automatically (see the service split note under
+"Layout" above).
 
 ### 6. Physical AC cutoff via Tuya smart plug (optional, per-battery)
 
@@ -278,11 +284,11 @@ power at the wall, the device can't charge, full stop.
 
 Onboard the plug the same way as the GTB-800 units (Tuya IoT Platform
 "Link App Account", API Explorer for the `local_key` - see step 1; no LAN
-IP needed), then confirm its switch dp with the same `discover.ts` script
-used for the panels:
+IP needed), then confirm its switch dp with the same `soltrk discover`
+command used for the panels:
 
 ```
-docker compose run --rm soltrk npx tsx packages/tuya/src/discover.ts <id> <key>
+docker compose run --rm app soltrk discover <id> <key>
 ```
 
 `"1"` is the standard boolean on/off dp for most Tuya plugs and is the
@@ -363,10 +369,22 @@ integration.
 
 ## Development
 
-`./packages` is bind-mounted into the container and it runs with
-auto-reload (`tsx watch`). Edit and save - no `docker compose build`
-needed. A rebuild is only required after changing a `package.json`
-(workspace or dependency changes) or the `Dockerfile`.
+`./packages` is bind-mounted into the container, but nothing auto-reloads
+on save - deliberately not `tsx watch`, since that restarts the whole
+process (including a fresh Anker cloud login) on every file change, which
+tripped Anker's own sign-in lockout more than once during heavy editing.
+Type-check and test via the `app` service (a throwaway container per
+invocation, never left running) as you go:
+
+```
+docker compose run --rm app npx tsc --noEmit
+docker compose run --rm app npm test
+```
+
+then `docker compose restart soltrk` once you actually want the running
+system to pick up the change. A full rebuild (`docker compose build`) is
+only needed after changing a `package.json` (workspace or dependency
+changes) or the `Dockerfile`.
 
 TypeScript compiles as a single program from the root `tsconfig.json`
 (`include: ["packages/*/src"]`) rather than per-package builds -
@@ -374,10 +392,6 @@ npm workspaces here is purely for dependency/import-boundary clarity
 (`@soltrk/core`, `@soltrk/anker`, `@soltrk/tuya`, `@soltrk/cli`), not
 independent compilation.
 
-Run the test suite (crypto cross-validated against the Python reference
-implementation with a fixed key, protocol encode/decode against real
-captured payloads - see `packages/anker/src/*.test.ts`) with:
-
-```
-docker compose run --rm --no-deps soltrk npm test
-```
+The test suite cross-validates crypto against the Python reference
+implementation with a fixed key, and protocol encode/decode against real
+captured payloads - see `packages/anker/src/*.test.ts`.

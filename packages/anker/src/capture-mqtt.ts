@@ -1,51 +1,33 @@
+import mqtt from "mqtt";
+import { Result } from "@soltrk/core";
+import { login, getBindDevices, getUserMqttInfo } from "./http-api";
+
 /**
  * One-off diagnostic: subscribe to BOTH the device->cloud (`dt/.../#`) and
  * app->device (`cmd/.../#`) topic trees for one device and log every raw
  * message. Used to reverse engineer new commands (e.g. the real Anker app's
  * TOU mode switch) the same way `set_charge_limit` was found - by watching
- * what the app itself publishes while you perform the action in it. Run
- * inside the container:
- *
- *   docker compose run --rm soltrk npx tsx packages/anker/src/capture-mqtt.ts <device_sn>
+ * what the app itself publishes while you perform the action in it. Run via
+ * `soltrk capture-mqtt <device_sn>` (see packages/cli/src/index.ts).
  */
-import mqtt from "mqtt";
-import { login, getBindDevices, getUserMqttInfo, AnkerDevice } from "./http-api";
-
-async function main() {
-  const targetSn = process.argv[2];
-  if (!targetSn) {
-    console.error("Usage: captureMqtt.ts <device_sn>");
-    process.exit(1);
-  }
-
-  const email = process.env.ANKER_EMAIL;
-  const password = process.env.ANKER_PASSWORD;
-  const country = process.env.ANKER_COUNTRY ?? "JP";
-  if (!email || !password) {
-    console.error("Missing ANKER_EMAIL / ANKER_PASSWORD env vars");
-    process.exit(1);
-  }
-
+export async function captureMqtt(
+  targetSn: string,
+  email: string,
+  password: string,
+  country: string,
+): Promise<void> {
   const session = await login(email, password, country);
-  if (session instanceof Error) {
-    console.error("login failed:", session.message);
-    process.exit(1);
-  }
+  if (Result.isErr(session)) throw session;
+
   const devices = await getBindDevices(session);
-  if (devices instanceof Error) {
-    console.error("getBindDevices failed:", devices.message);
-    process.exit(1);
-  }
+  if (Result.isErr(devices)) throw devices;
   const device = devices.find((d) => d.device_sn === targetSn);
   if (!device) {
-    console.error(`No bound device with sn ${targetSn} (have: ${devices.map((d) => d.device_sn).join(", ")})`);
-    process.exit(1);
+    throw new Error(`No bound device with sn ${targetSn} (have: ${devices.map((d) => d.device_sn).join(", ")})`);
   }
+
   const mqttInfo = await getUserMqttInfo(session);
-  if (mqttInfo instanceof Error) {
-    console.error("getUserMqttInfo failed:", mqttInfo.message);
-    process.exit(1);
-  }
+  if (Result.isErr(mqttInfo)) throw mqttInfo;
 
   const client = mqtt.connect(`mqtts://${mqttInfo.endpoint_addr}:8883`, {
     cert: mqttInfo.certificate_pem,
@@ -87,8 +69,3 @@ async function main() {
     console.log();
   });
 }
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});

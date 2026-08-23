@@ -76,10 +76,10 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       statusBySn[sn] = await getDriver(vendorBySn[sn]).getStatus(sn);
     }
     const socBySn = Object.fromEntries(
-      Object.entries(statusBySn).map(([sn, s]) => [sn, s instanceof Error ? undefined : s.batterySoc]),
+      Object.entries(statusBySn).map(([sn, s]) => [sn, Result.isErr(s) ? undefined : s.batterySoc]),
     );
     const acInputBySn = Object.fromEntries(
-      Object.entries(statusBySn).map(([sn, s]) => [sn, s instanceof Error ? undefined : s.acInputWatts]),
+      Object.entries(statusBySn).map(([sn, s]) => [sn, Result.isErr(s) ? undefined : s.acInputWatts]),
     );
 
     const { watts: targets, acOn } = allocate(prioritySns, socBySn, acInputBySn, totalWatts, {
@@ -108,12 +108,12 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
         sn,
         name: nameBySn[sn],
         priority: i + 1,
-        batterySoc: status instanceof Error ? undefined : status.batterySoc,
-        acInputWatts: status instanceof Error ? undefined : status.acInputWatts,
-        acOutputWatts: status instanceof Error ? undefined : status.acOutputWatts,
+        batterySoc: Result.isErr(status) ? undefined : status.batterySoc,
+        acInputWatts: Result.isErr(status) ? undefined : status.acInputWatts,
+        acOutputWatts: Result.isErr(status) ? undefined : status.acOutputWatts,
         targetWatts: target,
         acOn: acOn[sn],
-        lastCommandOk: !(commandResult instanceof Error),
+        lastCommandOk: Result.isOk(commandResult),
       });
     }
 
