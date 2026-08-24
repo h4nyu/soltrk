@@ -174,7 +174,10 @@ describe("GatedBatteryDriver", () => {
     inner.soc = RECOVERY_SOC_PERCENT; // reaches recovery: released, back to normal (off at offWatts)
     await d.setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.deepEqual(gate.calls, [true, true, true, false]);
+    // The plug itself is only re-commanded on an actual transition (see
+    // "does not re-invoke the plug..." below) - the gate stays forced on
+    // for the middle two cycles, so those don't show up here.
+    assert.deepEqual(gate.calls, [true, false]);
   });
 
   test("keeps the last forced decision when SOC is unreadable mid-recovery", async () => {
@@ -188,6 +191,42 @@ describe("GatedBatteryDriver", () => {
     inner.soc = undefined; // status read fails this cycle
     await d.setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.deepEqual(gate.calls, [true, true]);
+    // Still forced on both cycles, so the plug is only commanded once.
+    assert.deepEqual(gate.calls, [true]);
+  });
+
+  test("does not re-invoke the plug when the gate state hasn't changed since last time", async () => {
+    const inner = fakeInner(50);
+    const gate = fakeGate();
+    const d = driver(inner, new Map([[GATED_SN, gate]]));
+
+    await d.setChargeLimit(GATED_SN, 300); // gate on
+    await d.setChargeLimit(GATED_SN, 350); // still on, different wattage
+
+    assert.deepEqual(gate.calls, [true]);
+    // The wattage command itself still goes out every cycle the gate is on.
+    assert.deepEqual(inner.calls, [
+      { sn: GATED_SN, watts: 300 },
+      { sn: GATED_SN, watts: 350 },
+    ]);
+  });
+
+  test("retries the plug on the next cycle after a failed attempt, even though the state didn't change", async () => {
+    const inner = fakeInner(50);
+    let calls = 0;
+    const gate: PowerGate = {
+      setOn: async (on) => {
+        calls++;
+        return calls === 1 ? new Error("plug unreachable") : undefined;
+      },
+    };
+    const d = driver(inner, new Map([[GATED_SN, gate]]));
+
+    const first = await d.setChargeLimit(GATED_SN, 300);
+    const second = await d.setChargeLimit(GATED_SN, 300);
+
+    assert.ok(Result.isErr(first));
+    assert.ok(Result.isOk(second));
+    assert.equal(calls, 2);
   });
 });

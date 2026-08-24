@@ -4,13 +4,16 @@ import { SolarSource } from "../solar/solar-source";
 import { BatteryDriver, BatteryStatus } from "../battery/battery-driver";
 import { Result } from "../result";
 import { allocate } from "./allocator";
-import { readPriority } from "./priority";
+import { readDevices } from "./devices";
 
 export type StateSnapshot = {
   timestamp: string;
   totalSolarWatts: number;
   // Sum of every battery's measured AC input this cycle.
   totalAcInputWatts: number;
+  // Sum of every battery's measured AC output (household load passthrough)
+  // this cycle.
+  totalAcOutputWatts: number;
   // The balance the whole system steers toward zero: solar generation minus
   // total battery AC input. Positive = unconsumed solar (potential export),
   // negative = drawing that much from the grid on top of solar.
@@ -18,7 +21,6 @@ export type StateSnapshot = {
   devices: {
     sn: string;
     name: string | undefined;
-    priority: number;
     batterySoc: number | undefined;
     acInputWatts: number | undefined;
     acOutputWatts: number | undefined;
@@ -65,14 +67,14 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
   process.on("SIGTERM", stop);
 
   while (!stopping) {
-    const priorityEntries = readPriority();
-    const prioritySns = priorityEntries.map((e) => e.sn);
-    const nameBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.name]));
-    const vendorBySn = Object.fromEntries(priorityEntries.map((e) => [e.sn, e.vendor ?? "anker"]));
+    const deviceEntries = readDevices();
+    const sns = deviceEntries.map((e) => e.sn);
+    const nameBySn = Object.fromEntries(deviceEntries.map((e) => [e.sn, e.name]));
+    const vendorBySn = Object.fromEntries(deviceEntries.map((e) => [e.sn, e.vendor ?? "anker"]));
     const totalWatts = solar.getTotalWatts();
 
     const statusBySn: Record<string, Result<BatteryStatus>> = {};
-    for (const sn of prioritySns) {
+    for (const sn of sns) {
       statusBySn[sn] = await getDriver(vendorBySn[sn]).getStatus(sn);
     }
     const socBySn = Object.fromEntries(
@@ -81,8 +83,11 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const acInputBySn = Object.fromEntries(
       Object.entries(statusBySn).map(([sn, s]) => [sn, Result.isErr(s) ? undefined : s.acInputWatts]),
     );
+    const acOutputBySn = Object.fromEntries(
+      Object.entries(statusBySn).map(([sn, s]) => [sn, Result.isErr(s) ? undefined : s.acOutputWatts]),
+    );
 
-    const { watts: targets, acOn } = allocate(prioritySns, socBySn, acInputBySn, totalWatts, {
+    const { watts: targets, acOn } = allocate(sns, socBySn, acInputBySn, acOutputBySn, totalWatts, {
       min: deps.chargeLimitMin,
       max: deps.chargeLimitMax,
       minToCharge: deps.minSolarToChargeWatts,
@@ -91,11 +96,11 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
 
     const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
     if (netWatts >= deps.minSolarToChargeWatts && Object.values(acOn).every((on) => !on)) {
-      console.warn(`[loop] ${totalWatts}W solar available but every Anker unit is full or unreachable`);
+      console.warn(`[loop] ${totalWatts.toFixed(1)}W solar available but every Anker unit is full or unreachable`);
     }
 
     const deviceStates: StateSnapshot["devices"] = [];
-    for (const [i, sn] of prioritySns.entries()) {
+    for (const sn of sns) {
       const target = targets[sn];
       // Sent every cycle, even when target is unchanged from last time: a
       // gated device's actual on/off decision (see GatedBatteryDriver) can
@@ -107,7 +112,6 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       deviceStates.push({
         sn,
         name: nameBySn[sn],
-        priority: i + 1,
         batterySoc: Result.isErr(status) ? undefined : status.batterySoc,
         acInputWatts: Result.isErr(status) ? undefined : status.acInputWatts,
         acOutputWatts: Result.isErr(status) ? undefined : status.acOutputWatts,
@@ -118,22 +122,32 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     }
 
     const totalAcInputWatts = deviceStates.reduce((sum, d) => sum + (d.acInputWatts ?? 0), 0);
+    const totalAcOutputWatts = deviceStates.reduce((sum, d) => sum + (d.acOutputWatts ?? 0), 0);
     const balanceWatts = totalWatts - totalAcInputWatts;
 
     const snapshot: StateSnapshot = {
       timestamp: new Date().toISOString(),
       totalSolarWatts: totalWatts,
       totalAcInputWatts,
+      totalAcOutputWatts,
       balanceWatts,
       devices: deviceStates,
     };
     writeState(deps.stateFilePath, snapshot);
     deps.recordHistory?.(snapshot);
 
+    const r1 = (n: number) => n.toFixed(1);
     console.log(
-      `[loop] solar=${totalWatts}W input=${totalAcInputWatts}W balance=${balanceWatts >= 0 ? "+" : ""}${balanceWatts}W ` +
+      `[loop] solar=${r1(totalWatts)}W input=${r1(totalAcInputWatts)}W output=${r1(totalAcOutputWatts)}W ` +
+        `balance=${balanceWatts >= 0 ? "+" : ""}${r1(balanceWatts)}W ` +
         deviceStates
-          .map((d) => `${d.name ?? d.sn}:soc=${d.batterySoc ?? "?"}%,target=${d.targetWatts}W`)
+          .map(
+            (d) =>
+              `${d.name ?? d.sn}:${d.acOn ? "ON" : "OFF"},soc=${d.batterySoc ?? "?"}%,` +
+              `in=${d.acInputWatts === undefined ? "?" : r1(d.acInputWatts)}W,` +
+              `out=${d.acOutputWatts === undefined ? "?" : r1(d.acOutputWatts)}W,` +
+              `target=${r1(d.targetWatts)}W`,
+          )
           .join(" "),
     );
 

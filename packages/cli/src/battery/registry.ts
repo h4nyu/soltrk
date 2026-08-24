@@ -20,7 +20,7 @@ const driverFactories: Record<string, () => BatteryDriver> = {
   },
   // Same underlying Anker devices, gated by a physical Tuya smart plug for
   // whichever sn(s) have a TUYA_PLUG_*_GATES_SN entry - see
-  // data/priority.json (set a device's "vendor" field to this) and
+  // data/devices.json (set a device's "vendor" field to this) and
   // gatedBatteryDriver.ts.
   "anker-gated": () => {
     const config = loadConfig();

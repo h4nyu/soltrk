@@ -5,6 +5,16 @@ import { TuyaPlugConfig } from "./config";
 // How long to listen for the device's UDP broadcast before giving up on
 // resolving its current IP for this call.
 const FIND_TIMEOUT_SEC = 10;
+// A single find()/connect() round can time out transiently on this network
+// (observed live, same LAN flakiness as the GTB-800 solar readings) - retry
+// a couple of times within the same call rather than giving up and losing
+// a full poll cycle's worth of gating, since the caller (GatedBatteryDriver)
+// treats any failure here as "the AC state didn't change" and skips its own
+// charge-limit command for the cycle too.
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Controls a plain Tuya smart plug wired in series with a battery's AC
@@ -12,8 +22,9 @@ const FIND_TIMEOUT_SEC = 10;
  * battery's own charge-limit command or TOU schedule, both of which have
  * proven unreliable for actually stopping AC charging (see the main
  * README). Connects fresh for each call rather than holding a persistent
- * connection: this is only invoked when the desired on/off state actually
- * changes (see GatedBatteryDriver in @soltrk/cli), not on every poll cycle.
+ * connection. GatedBatteryDriver only calls this when the desired on/off
+ * state actually changes, not on every poll cycle - but a single call can
+ * still fail transiently, hence the retries below.
  *
  * No IP is configured - this network's devices don't have DHCP
  * reservations and their IPs drift, so it's resolved fresh via UDP
@@ -25,7 +36,7 @@ const FIND_TIMEOUT_SEC = 10;
 export const SmartPlug = (props: { config: TuyaPlugConfig }) => {
   const { config } = props;
 
-  const setOn = async (on: boolean): Promise<Result<void>> => {
+  const attemptOnce = async (on: boolean): Promise<Result<void>> => {
     const client = new TuyAPI({ id: config.id, key: config.key, version: "3.3" });
     // Without a listener, tuyapi's async "error" events (e.g. a timeout
     // emitted outside the awaited connect()/set() promise chain) are
@@ -42,12 +53,25 @@ export const SmartPlug = (props: { config: TuyaPlugConfig }) => {
       await client.set({ dps: config.switchDp, set: on });
       return undefined;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      console.error(`[tuya-plug:${config.id}] failed to set on=${on}:`, error.message);
-      return error;
+      return err instanceof Error ? err : new Error(String(err));
     } finally {
       client.disconnect();
     }
+  };
+
+  const setOn = async (on: boolean): Promise<Result<void>> => {
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const result = await attemptOnce(on);
+      if (Result.isOk(result)) return undefined;
+      lastError = result;
+      console.error(
+        `[tuya-plug:${config.id}] failed to set on=${on} (attempt ${attempt}/${MAX_ATTEMPTS}):`,
+        result.message,
+      );
+      if (attempt < MAX_ATTEMPTS) await sleep(RETRY_DELAY_MS);
+    }
+    return lastError as Error;
   };
 
   return { setOn };

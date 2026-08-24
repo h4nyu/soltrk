@@ -78,7 +78,7 @@ program
 
 program
   .command("devices")
-  .description("List Anker device serials bound to this account (for data/priority.json)")
+  .description("List Anker device serials bound to this account (for data/devices.json)")
   .action(async () => {
     const { email, password, country } = ankerCreds();
     const session = await login(email, password, country);

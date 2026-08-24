@@ -2,7 +2,7 @@ import pino from "pino";
 import { CycleRecorder } from "@soltrk/core";
 
 // Tied to the ./data volume mount in docker-compose.yml, like state.json and
-// priority.json - unlike the container's own stdout logs (rotated, and lost
+// devices.json - unlike the container's own stdout logs (rotated, and lost
 // entirely when the container is recreated), this survives on the host.
 // Append-only JSONL, one record per control cycle: greppable with jq, and
 // trivially loadable for plotting later. At one line per minute this grows

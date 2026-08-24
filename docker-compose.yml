@@ -6,13 +6,16 @@ x-env: &env
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
   POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
-  MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-150}
+  # Below net solar this low, nothing bothers to charge - matches the real
+  # measured AC floor (CHARGE_LIMIT_MIN + ~33W conversion overhead), below
+  # which switching a unit on would backfeed rather than help.
+  MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-130}
   # Constant floor on house consumption that's always safely drawn regardless
   # of solar (fridge compressor, routers, etc). 0 unless you know better -
   # only raise it to a value the house never dips below.
   HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
   # Below this SOC, a gated device charges at minimum rate regardless of
-  # solar/priority - the AC cutoff must never fully drain a battery powering
+  # solar/the allocator - the AC cutoff must never fully drain a battery powering
   # something that can't lose power (e.g. an actual refrigerator).
   GATED_CRITICAL_SOC_PERCENT: &GATED_CRITICAL_SOC_PERCENT ${GATED_CRITICAL_SOC_PERCENT:-6}
   # Once forced on above, stays on until SOC reaches this higher threshold -
@@ -29,7 +32,7 @@ x-env: &env
   # values change often enough (adding a plug, re-linking a device) that
   # numbered env vars plus docker-compose's shell-escaping footguns for
   # keys containing `$` were worse than a plain JSON file. Same reasoning
-  # for the battery priority order: it lives directly in data/priority.json
+  # for the battery device list: it lives directly in data/devices.json
   # (see README) rather than being seeded from an env var - the file was
   # already the live source of truth, so requiring an env var too, forever,
   # just for a one-time seed was redundant.

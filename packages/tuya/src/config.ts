@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 
 // Tied to the ./data volume mount in docker-compose.yml, like state.json
-// and priority.json. Unlike those, this holds secrets (Tuya local_keys),
+// and devices.json. Unlike those, this holds secrets (Tuya local_keys),
 // so it lives under the already git-ignored data/ dir rather than .env -
 // device/plug IDs and keys change often enough (adding a plug, re-linking
 // a device) that maintaining them as numbered env vars in both .env and

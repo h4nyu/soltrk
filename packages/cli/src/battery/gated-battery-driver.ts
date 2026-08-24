@@ -32,16 +32,26 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * battery draining down to zero powering whatever it's plugged into (e.g.
  * an actual refrigerator) - so at/below `criticalSocPercent`, the gate opens
  * and charges at whatever wattage was requested (normally `offWatts`, i.e.
- * the hardware's own minimum) regardless of solar availability or priority.
+ * the hardware's own minimum) regardless of solar availability or the
+ * allocator's own balance evaluation.
  * It stays forced open until SOC recovers to `recoverySocPercent` (a higher
  * threshold, not the same one) rather than immediately releasing at
  * `criticalSocPercent` again - without that gap, a SOC hovering right at the
  * critical line would flip the plug on/off every single poll cycle.
  * This state is tracked per sn in `forcedSns`, since the decision depends on
- * *why* the gate was opened last time (forced vs. normal priority), not just
- * the current request in isolation - and this method must be called every
- * cycle regardless of whether the request changed (see loop.ts) for the
- * check to actually run.
+ * *why* the gate was opened last time (forced vs. the allocator's own
+ * decision), not just the current request in isolation - and the critical-
+ * SOC check above still runs every cycle regardless of whether the gate
+ * itself needs touching (see loop.ts, which calls this every cycle
+ * unconditionally). The physical `plug.setOn()` call itself is only made
+ * when the desired state actually differs from the last one successfully
+ * applied (`lastGateBySn`) - every physical plug in this project shares the
+ * same LAN with the GTB-800 solar readings, which are known to time out
+ * transiently, so calling it needlessly on every cycle just adds exposure
+ * to that flakiness for no behavioral difference. `inner.setChargeLimit`
+ * (the wattage itself) is still sent every cycle the gate is on, since the
+ * allocator's requested watts changes cycle to cycle even while the gate
+ * stays open.
  */
 export const GatedBatteryDriver = (props: {
   inner: BatteryDriver;
@@ -52,6 +62,7 @@ export const GatedBatteryDriver = (props: {
 }): BatteryDriver => {
   const { inner, plugsBySn, offWatts, criticalSocPercent, recoverySocPercent } = props;
   const forcedSns = new Set<string>();
+  const lastGateBySn = new Map<string, boolean>();
 
   const getStatus: BatteryDriver["getStatus"] = (sn) => inner.getStatus(sn);
 
@@ -70,13 +81,16 @@ export const GatedBatteryDriver = (props: {
     const critical = forcedSns.has(sn);
     if (critical) {
       console.warn(
-        `[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/priority (releases at ${recoverySocPercent}%)`,
+        `[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/allocator (releases at ${recoverySocPercent}%)`,
       );
     }
 
     const gateOn = critical || (acOn ?? watts > offWatts);
-    const gateResult = await plug.setOn(gateOn);
-    if (Result.isErr(gateResult)) return gateResult;
+    if (lastGateBySn.get(sn) !== gateOn) {
+      const gateResult = await plug.setOn(gateOn);
+      if (Result.isErr(gateResult)) return gateResult;
+      lastGateBySn.set(sn, gateOn);
+    }
     if (!gateOn) return undefined;
     return inner.setChargeLimit(sn, watts);
   };

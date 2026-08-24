@@ -2,8 +2,9 @@
 
 Keeps 2x GTB-800 plug-in solar microinverters (880W total) from backfeeding
 the grid by routing their output into up to N Anker SOLIX portable power
-stations, charged one at a time in a configured priority order (unit fills to
-100% SOC, then the next unit takes over).
+stations, charged one at a time - whichever unit's charging would leave the
+grid balance closest to zero this cycle (unit fills to 100% SOC, then the
+next-best unit takes over).
 
 ## Layout
 
@@ -11,7 +12,7 @@ An npm workspaces monorepo, split by layer (ports/business logic vs.
 adapters), the same shape as the sibling `picomanager` project:
 
 - **`packages/core`** - the vendor-neutral domain: the `BatteryDriver` and
-  `SolarSource` ports, the priority allocator, and the control loop
+  `SolarSource` ports, the balance-evaluation allocator, and the control loop
   (`runLoop`). Depends on nothing but its own ports - it never imports Anker
   or Tuya code directly.
 - **`packages/anker`** - the one `BatteryDriver` adapter today
@@ -54,15 +55,25 @@ control loop, and it's the one you `docker compose up -d soltrk`.
 - **Loop**: every `POLL_INTERVAL_MS` (default 1 minute), `soltrk` reads total
   solar watts and steers one number toward zero: `balance = solar - total
   battery AC input` (logged each cycle and written to `data/state.json`).
-  The highest-priority unit that isn't full yet is the *active* charging
-  target: it's asked to charge at the current solar output *minus whatever
-  the other units are already measured to be drawing* (their critical-SOC
-  rescue charging, or a full unit's passthrough - see below), capped at the
-  hardware max (1200W). No gradual ramp-up: an earlier version ramped the
-  request, but once it's capped at actual solar the ramp just added lag,
-  and real solar changes gradually enough on its own (observed: roughly an
-  hour from 0 to peak in the morning). Every non-active unit idles at the
-  hardware's minimum request (100W - there's no real "0W/off", see below);
+  There's no fixed charge order between units - every cycle, each
+  not-yet-full unit is evaluated as the hypothetical *active* charging
+  target: charge at the current solar output *minus whatever the other
+  units are already measured to be drawing* (their critical-SOC rescue
+  charging, or a full unit's passthrough - see below) *minus that unit's own
+  measured household load* (`acOutputWatts`, known up front regardless of
+  whether its AC input is on) *minus a fixed ~33W conversion overhead*,
+  capped at the hardware max (1200W). Whichever feasible unit leaves the
+  smallest (non-negative) leftover balance wins and becomes active this
+  cycle - in practice, a unit with little or no load of its own reaches
+  100% quickly and hands the turn to the next-best unit on its own, so there's
+  no need to separately track fairness or ordering. A unit that must never be
+  allowed to run dry (e.g. one powering an actual refrigerator) is protected
+  by the critical-SOC rescue below, not by charging order. No gradual
+  ramp-up: an earlier version ramped the request, but once it's capped at
+  actual solar the ramp just added lag, and real solar changes gradually
+  enough on its own (observed: roughly an hour from 0 to peak in the
+  morning). Every non-active unit idles at the hardware's minimum request
+  (100W - there's no real "0W/off", see below);
   whether it's actually *connected* to AC is a separate per-unit decision:
   the active unit and any full (100% SOC) unit stay connected while solar
   is sufficient - a full unit doesn't charge, but with AC present it passes
@@ -132,7 +143,7 @@ skip the disclaimers only if you understand it.
   hardware doesn't reliably obey a specific requested wattage - a 100W
   request was observed drawing 137W on real hardware. `soltrk` treats the
   requested number as an approximate ceiling and steers by the measured
-  balance instead (see "How it works"); the ~30W conversion overhead while
+  balance instead (see "How it works"); the ~33W conversion overhead while
   charging is also why a full unit's passthrough (no charging, no
   conversion) is deliberately preferred over cycling its battery.
 - **`setChargeLimit` cannot fully stop charging by itself, regardless of
@@ -180,7 +191,7 @@ requires Docker Desktop's host networking support to be enabled under
 Settings > Resources > Network).
 
 Create a git-ignored `data/tuya.json` (same `./data` volume mount as
-`state.json`/`priority.json` - it holds secrets, hence `data/` and not
+`state.json`/`devices.json` - it holds secrets, hence `data/` and not
 `.env`/`docker-compose.yml`, where numbered env vars plus shell-escaping
 for keys containing `$` got painful once there were several devices):
 
@@ -233,29 +244,27 @@ time - running this (or `soltrk` itself) will log the phone app out of that
 account. It can just log back in; the two don't fight over it once both are
 logged in independently.
 
-### 4. Priority order (`data/priority.json`)
+### 4. Device list (`data/devices.json`)
 
-Charge priority isn't fixed at startup: `soltrk` re-reads
-`data/priority.json` every cycle, so it can be changed live without
-restarting anything. There's no env-var seed for it (same reasoning as
-Tuya's config file - it would just be a one-time default for a file that's
-the live source of truth forever after) - create it directly, one entry
-per battery:
+`soltrk` re-reads `data/devices.json` every cycle, so it can be changed live
+without restarting anything. There's no env-var seed for it (same reasoning
+as Tuya's config file - it would just be a one-time default for a file
+that's the live source of truth forever after) - create it directly, one
+entry per battery:
 
 ```json
 [
-  { "sn": "APCDLRG0G06401641", "name": "冷蔵庫", "vendor": "anker-gated", "priority": 1 },
-  { "sn": "APCDLRG0G06400974", "name": "キッチン", "vendor": "anker", "priority": 2 }
+  { "sn": "APCDLRG0G06401641", "name": "冷蔵庫", "vendor": "anker-gated" },
+  { "sn": "APCDLRG0G06400974", "name": "キッチン", "vendor": "anker" }
 ]
 ```
 
-Lower `priority` number charges first; a unit is skipped once its SOC hits
-100%. Edit the file directly (e.g. reorder the numbers) to change it; `name`
-is just for readable logs/`status` output, and `vendor` selects which
-adapter in `packages/cli/src/battery/registry.ts` talks to that serial
-(defaults to `"anker"` if omitted - see Architecture below). Use
-`"anker-gated"` for any sn with a physical AC-cutoff smart plug configured
-(step 6).
+There's no charge order to configure - see "How it works" for how the
+allocator picks which unit charges each cycle. `name` is just for readable
+logs/`status` output, and `vendor` selects which adapter in
+`packages/cli/src/battery/registry.ts` talks to that serial (defaults to
+`"anker"` if omitted - see Architecture below). Use `"anker-gated"` for any
+sn with a physical AC-cutoff smart plug configured (step 6).
 
 ### 5. Run
 
@@ -300,20 +309,21 @@ default if a plug entry omits `"switchDp"`. Then add to `data/tuya.json`'s
 ```
 
 (`gatesSn` is the battery this plug's output feeds), and set that
-battery's `vendor` to `"anker-gated"` in `data/priority.json` (step 4).
+battery's `vendor` to `"anker-gated"` in `data/devices.json` (step 4).
 `GatedBatteryDriver` (`packages/cli/src/battery/gated-battery-driver.ts`)
-then cuts the plug whenever the allocator deprioritizes that battery, and
-restores it (plus still sending the normal wattage command for fine
-control) whenever it's the active charging target - any sn with no
-matching plug entry is unaffected and behaves exactly like plain `"anker"`.
+then cuts the plug whenever the allocator doesn't pick that battery as this
+cycle's active target, and restores it (plus still sending the normal
+wattage command for fine control) whenever it is - any sn with no matching
+plug entry is unaffected and behaves exactly like plain `"anker"`.
 
 **Safety floor:** a gated device can be cut off from AC for hours at a
-time (no solar, deprioritized) with nothing else stopping its own battery
-from draining down to zero while it keeps powering whatever it's actually
-plugged into (e.g. a real refrigerator). At/below `GATED_CRITICAL_SOC_PERCENT`
-(default 6%), `GatedBatteryDriver` opens the gate and charges at whatever
-wattage it's given (normally the hardware's own minimum) regardless of
-solar availability or priority order - this overrides everything else. It
+time (no solar, not this cycle's pick) with nothing else stopping its own
+battery from draining down to zero while it keeps powering whatever it's
+actually plugged into (e.g. a real refrigerator). At/below
+`GATED_CRITICAL_SOC_PERCENT` (default 6%), `GatedBatteryDriver` opens the
+gate and charges at whatever wattage it's given (normally the hardware's
+own minimum) regardless of solar availability or the allocator's own
+decision - this overrides everything else. It
 stays forced open until SOC climbs back up to the higher
 `GATED_RECOVERY_SOC_PERCENT` (default 20%), not the same 6% line - without
 that gap, a SOC sitting right at the critical threshold would flip the
@@ -362,7 +372,7 @@ or `packages/tuya/src/solar-source.ts` for real examples.
 `packages/<vendor>` implementing it the same way (depending on
 `@soltrk/core` for the port type, nothing else), register an instance of it
 in `packages/cli/src/battery/registry.ts` under a vendor key, and tag that
-battery's `data/priority.json` entry with `"vendor": "<your key>"`. No
+battery's `data/devices.json` entry with `"vendor": "<your key>"`. No
 changes needed in `packages/core`. The same pattern applies to solar
 sources via the `SolarSource` port if you ever add a second panel/inverter
 integration.
