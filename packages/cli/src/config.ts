@@ -22,16 +22,24 @@ export function loadConfig() {
     ankerPassword: required("ANKER_PASSWORD"),
     ankerCountry: process.env.ANKER_COUNTRY ?? "JP",
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 60_000),
-    // Matches the Anker app's own "交流電池充電" slider range (100-1200W) -
-    // values outside this range get silently clamped by the device firmware
-    // rather than rejected (see control/allocator.ts and the README for why
-    // this means true "0W / stop charging" isn't achievable via this
-    // setting).
-    chargeLimitMin: 100,
+    // The Anker app's own "交流電池充電" slider only goes down to 100W, but a
+    // live test on 2026-08-24 (chargeLimitMin briefly lowered to 1) showed
+    // sub-100W requests (down to ~28W) DO scale the actual charge current
+    // roughly proportionally - the "gets silently clamped to 100W" claim
+    // that used to live here looks like it was really the same
+    // acInputWatts-includes-passthrough-load confusion diagnosed that day,
+    // not a real firmware clamp. That same test also sent full/passthrough
+    // devices a 1W request (never sent by the app itself, since it's below
+    // the slider's own floor) right before 冷蔵庫's status reads briefly
+    // started failing - probably unrelated, but not worth finding out the
+    // hard way on hardware powering an actual refrigerator. Settled on 50
+    // as a floor that's solidly inside the range already confirmed working
+    // (28-119W tested) while staying well clear of that 1W value.
+    chargeLimitMin: 50,
     chargeLimitMax: 1200,
     // Below this, we don't ask any device to charge at all (avoids 100W-floor
     // grid-draw noise from tiny dawn/dusk solar trickle).
-    minSolarToChargeWatts: Number(process.env.MIN_SOLAR_TO_CHARGE_WATTS ?? 150),
+    minSolarToChargeWatts: Number(process.env.MIN_SOLAR_TO_CHARGE_WATTS ?? 130),
     // Constant floor on house consumption (fridge compressor, routers, etc.)
     // that's safe to assume is always drawn regardless of solar - that much
     // of solar output never needs covering by the charger's ceil-rounding
@@ -39,14 +47,15 @@ export function loadConfig() {
     // confident the house never dips below.
     houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 0),
     // Below this SOC, a gated device (see GatedBatteryDriver) is charged at
-    // its minimum rate regardless of solar availability or priority - the
+    // its minimum rate regardless of solar availability or the allocator's
+    // own balance evaluation - the
     // physical AC cutoff must never be allowed to fully drain a battery
     // that's powering something that can't just lose power (e.g. an actual
     // refrigerator).
     gatedCriticalSocPercent: Number(process.env.GATED_CRITICAL_SOC_PERCENT ?? 6),
     // Once forced on by the critical floor above, a gated device keeps
     // charging until SOC reaches this (higher) threshold before normal
-    // priority/solar-based control resumes - a gap between the two
+    // solar-based control resumes - a gap between the two
     // prevents rapidly flipping the plug on/off if SOC hovers right at the
     // critical line.
     gatedRecoverySocPercent: Number(process.env.GATED_RECOVERY_SOC_PERCENT ?? 20),
