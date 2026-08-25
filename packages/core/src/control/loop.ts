@@ -70,6 +70,13 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
+  // Fed back into allocate() each cycle as previousActiveSn, so a candidate
+  // that's already charging gets a sticky bonus over a closely-matched
+  // challenger instead of the winner flipping every cycle. Persists through
+  // cycles with no winner at all (e.g. overnight) rather than resetting, so
+  // the last real incumbent keeps its edge once solar returns.
+  let previousActiveSn: string | undefined;
+
   while (!stopping) {
     const deviceEntries = readDevices();
     const sns = deviceEntries.map((e) => e.sn);
@@ -91,12 +98,21 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       Object.entries(statusBySn).map(([sn, s]) => [sn, Result.isErr(s) ? undefined : s.acOutputWatts]),
     );
 
-    const { watts: targets, acOn, scores } = allocate(sns, socBySn, acInputBySn, acOutputBySn, totalWatts, {
-      min: deps.chargeLimitMin,
-      max: deps.chargeLimitMax,
-      minToCharge: deps.minSolarToChargeWatts,
-      houseStandbyWatts: deps.houseStandbyWatts,
-    });
+    const { watts: targets, acOn, scores, activeSn } = allocate(
+      sns,
+      socBySn,
+      acInputBySn,
+      acOutputBySn,
+      totalWatts,
+      {
+        min: deps.chargeLimitMin,
+        max: deps.chargeLimitMax,
+        minToCharge: deps.minSolarToChargeWatts,
+        houseStandbyWatts: deps.houseStandbyWatts,
+      },
+      previousActiveSn,
+    );
+    if (activeSn !== undefined) previousActiveSn = activeSn;
 
     const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
     if (netWatts >= deps.minSolarToChargeWatts && Object.values(acOn).every((on) => !on)) {

@@ -91,6 +91,26 @@ describe("allocate", () => {
     assert.equal(result.acOn[SN2], false);
   });
 
+  test("a sticky incumbent keeps winning against a marginally-better challenger", () => {
+    // SN2 is only 1 point of SOC lower than incumbent SN1 - without the
+    // sticky bonus SN2's slightly larger urgency bonus would win outright,
+    // flipping the active device on a difference this small.
+    const result = allocate([SN1, SN2], { [SN1]: 41, [SN2]: 42 }, {}, {}, 500, LIMITS, SN1);
+    assert.equal(result.activeSn, SN1);
+    assert.equal(result.acOn[SN1], true);
+    assert.equal(result.acOn[SN2], false);
+  });
+
+  test("a clearly better challenger still takes over from the sticky incumbent", () => {
+    // SN2 is 80 points of SOC lower than incumbent SN1 - its urgency bonus
+    // (240W) easily clears SN1's combined urgency + sticky bonus (60W), so
+    // the sticky bonus doesn't just freeze the winner forever.
+    const result = allocate([SN1, SN2], { [SN1]: 90, [SN2]: 10 }, {}, {}, 500, LIMITS, SN1);
+    assert.equal(result.activeSn, SN2);
+    assert.equal(result.acOn[SN1], false);
+    assert.equal(result.acOn[SN2], true);
+  });
+
   test("prefers whichever candidate has the least load of its own", () => {
     // Both SN1 and SN2 could take the full 500W of solar, but SN2 is
     // already feeding a 200W load of its own - switching SN1 on instead

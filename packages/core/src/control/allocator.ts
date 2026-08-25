@@ -12,6 +12,16 @@ const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
 // critical-SOC floor in GatedBatteryDriver to kick in.
 const SOC_URGENCY_BONUS_WATTS_PER_PERCENT = 3;
 
+// Flat virtual watt bonus for whichever candidate won the *previous* cycle
+// (see `previousActiveSn`) - without this, two candidates within about 10
+// points of SOC of each other (10 * SOC_URGENCY_BONUS_WATTS_PER_PERCENT)
+// can flip the win back and forth every single cycle as their SOCs and
+// measured input tick past each other, physically toggling a gated
+// device's smart plug (and paying CHARGE_CONVERSION_OVERHEAD_WATTS again on
+// every switch) far more often than useful. A challenger needs a clearly
+// better case, not just a marginally better one, to actually take over.
+const STICKY_INCUMBENT_BONUS_WATTS = 30;
+
 export type AllocatorLimits = {
   min: number;
   max: number;
@@ -33,6 +43,12 @@ export type Allocation = {
   // wasn't a feasible candidate (full, unknown SOC, or infeasible even with
   // its urgency bonus) - present for the winner and every candidate it beat.
   scores: Record<string, number>;
+  // Which candidate (if any) won this cycle's balance evaluation - distinct
+  // from acOn, which is also true for any full device passing solar
+  // through. Feed this back in as the next call's `previousActiveSn` to
+  // give it a sticky incumbent bonus (see STICKY_INCUMBENT_BONUS_WATTS) and
+  // avoid chattering between two closely-matched candidates.
+  activeSn: string | undefined;
 };
 
 /**
@@ -104,6 +120,12 @@ export type Allocation = {
  * reacted to after the fact. A device with unknown SOC (status read
  * failed) is skipped, not assumed full or empty, so we don't get stuck
  * stalling behind an unreachable unit.
+ *
+ * `previousActiveSn` (the caller's own last `activeSn`, fed straight back
+ * in) gets a flat STICKY_INCUMBENT_BONUS_WATTS on top of its urgency bonus,
+ * so a challenger has to be clearly better, not just marginally ahead, to
+ * take over - otherwise two evenly matched candidates could flip the winner
+ * every single cycle.
  */
 export function allocate(
   sns: string[],
@@ -112,6 +134,7 @@ export function allocate(
   acOutputWattsBySn: Record<string, number | undefined>,
   availableWatts: number,
   limits: AllocatorLimits,
+  previousActiveSn?: string,
 ): Allocation {
   const watts: Record<string, number> = {};
   const acOn: Record<string, boolean> = {};
@@ -132,7 +155,7 @@ export function allocate(
     }
   }
 
-  if (netWatts < limits.minToCharge) return { watts, acOn, scores: {} };
+  if (netWatts < limits.minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
 
   const candidates = sns.filter((sn) => {
     const soc = socBySn[sn];
@@ -151,21 +174,23 @@ export function allocate(
     // socBySn[sn] is always defined here - sn came from `candidates`, which
     // already filtered out undefined SOCs.
     const urgencyBonus = SOC_URGENCY_BONUS_WATTS_PER_PERCENT * (100 - (socBySn[sn] as number));
-    if (requestWatts + urgencyBonus < limits.min) continue;
+    const stickyBonus = sn === previousActiveSn ? STICKY_INCUMBENT_BONUS_WATTS : 0;
+    const totalBonus = urgencyBonus + stickyBonus;
+    if (requestWatts + totalBonus < limits.min) continue;
     // balance is computed from the max-only clamp (never the hardware
     // floor) so it stays a pure efficiency signal - 0 whenever requestWatts
     // fits under limits.max (the common case, by construction: remainingWatts
     // minus requestWatts minus ownLoad minus overhead cancels out exactly),
     // positive only when capped at limits.max leaves solar unclaimed. If the
     // hardware floor were folded in here too, a candidate that's only
-    // feasible because of its urgency bonus would show an artificially deep
+    // feasible because of its bonuses would show an artificially deep
     // negative balance (having been forced up to limits.min from a genuinely
-    // negative request) - which, once urgencyBonus is subtracted *again* for
+    // negative request) - which, once the bonuses are subtracted *again* for
     // the score, could let it outrank a candidate with a much lower SOC that
     // happened to be cleanly feasible without needing the floor at all.
     const maxOnlyClampedWatts = Math.min(requestWatts, limits.max);
     const balance = remainingWatts - (maxOnlyClampedWatts + ownLoad + CHARGE_CONVERSION_OVERHEAD_WATTS);
-    const score = balance - urgencyBonus;
+    const score = balance - totalBonus;
     // The bonus only ever decides *who* wins - the dispatched wattage is
     // still exactly what the real numbers justify (clamped up to the
     // hardware floor only now, after ranking, when urgency alone made this
@@ -182,9 +207,9 @@ export function allocate(
       best = { sn, requestWatts: clampedWatts, score, ownLoad };
     }
   }
-  if (!best) return { watts, acOn, scores };
+  if (!best) return { watts, acOn, scores, activeSn: undefined };
 
   watts[best.sn] = best.requestWatts;
   acOn[best.sn] = true;
-  return { watts, acOn, scores };
+  return { watts, acOn, scores, activeSn: best.sn };
 }
