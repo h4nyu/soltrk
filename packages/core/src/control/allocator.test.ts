@@ -70,6 +70,27 @@ describe("allocate", () => {
     assert.equal(result.watts[SN1], 100);
   });
 
+  test("a candidate only feasible because of its own urgency bonus can't outrank a genuinely lower-SOC one", () => {
+    // SN1 (10% SOC) is cleanly feasible on its own (467W, well inside
+    // limits.max) with nothing else drawing - balance 0, so its score is
+    // driven entirely by its own (large) urgency bonus. SN2 (50% SOC) is
+    // only feasible at all because SN1 is already measured drawing 467W,
+    // pushing SN2's raw request to -50W - its own (smaller) urgency bonus
+    // just barely clears the floor. If the hardware-minimum clamp leaked
+    // into SN2's balance, that forced-up deficit plus its own bonus could
+    // (bug, since fixed) outscore SN1 despite SN1 having a much lower SOC.
+    const result = allocate(
+      [SN1, SN2],
+      { [SN1]: 10, [SN2]: 50 },
+      { [SN1]: 467 },
+      { [SN2]: 50 },
+      500,
+      LIMITS,
+    );
+    assert.equal(result.acOn[SN1], true);
+    assert.equal(result.acOn[SN2], false);
+  });
+
   test("prefers whichever candidate has the least load of its own", () => {
     // Both SN1 and SN2 could take the full 500W of solar, but SN2 is
     // already feeding a 200W load of its own - switching SN1 on instead

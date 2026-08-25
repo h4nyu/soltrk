@@ -152,12 +152,25 @@ export function allocate(
     // already filtered out undefined SOCs.
     const urgencyBonus = SOC_URGENCY_BONUS_WATTS_PER_PERCENT * (100 - (socBySn[sn] as number));
     if (requestWatts + urgencyBonus < limits.min) continue;
+    // balance is computed from the max-only clamp (never the hardware
+    // floor) so it stays a pure efficiency signal - 0 whenever requestWatts
+    // fits under limits.max (the common case, by construction: remainingWatts
+    // minus requestWatts minus ownLoad minus overhead cancels out exactly),
+    // positive only when capped at limits.max leaves solar unclaimed. If the
+    // hardware floor were folded in here too, a candidate that's only
+    // feasible because of its urgency bonus would show an artificially deep
+    // negative balance (having been forced up to limits.min from a genuinely
+    // negative request) - which, once urgencyBonus is subtracted *again* for
+    // the score, could let it outrank a candidate with a much lower SOC that
+    // happened to be cleanly feasible without needing the floor at all.
+    const maxOnlyClampedWatts = Math.min(requestWatts, limits.max);
+    const balance = remainingWatts - (maxOnlyClampedWatts + ownLoad + CHARGE_CONVERSION_OVERHEAD_WATTS);
+    const score = balance - urgencyBonus;
     // The bonus only ever decides *who* wins - the dispatched wattage is
     // still exactly what the real numbers justify (clamped up to the
-    // hardware floor when urgency alone made this candidate feasible).
-    const clampedWatts = Math.max(limits.min, Math.min(requestWatts, limits.max));
-    const balance = remainingWatts - (clampedWatts + ownLoad + CHARGE_CONVERSION_OVERHEAD_WATTS);
-    const score = balance - urgencyBonus;
+    // hardware floor only now, after ranking, when urgency alone made this
+    // candidate feasible).
+    const clampedWatts = Math.max(limits.min, maxOnlyClampedWatts);
     scores[sn] = score;
     // Whenever nothing else is drawing and SOCs are equal, every feasible
     // candidate reaches the same score - the request just absorbs whatever's
