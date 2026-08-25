@@ -7,8 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/cli/src/index.js",
+    "typecheck": "tsc",
     "dev": "tsx watch packages/cli/src/index.ts run",
     "test": "find . -name '*.test.ts' -not -path '*/node_modules/*' | xargs tsx --test"
   },
