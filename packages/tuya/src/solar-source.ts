@@ -73,6 +73,7 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
         if (typeof raw === "number") {
           tracked.lastWatts = raw / cfg.powerScale;
           tracked.lastUpdatedAt = Date.now();
+          console.log(`[tuya:${cfg.name}] ${tracked.lastWatts.toFixed(1)}W`);
         }
       });
       client.on("error", (err) => {
