@@ -28,6 +28,10 @@ export type StateSnapshot = {
     // The allocator's AC-gate decision for this device this cycle (see
     // control/allocator.ts) - what GatedBatteryDriver switches the plug to.
     acOn: boolean;
+    // The allocator's ranking score for this device this cycle (lower won) -
+    // undefined if it wasn't a feasible candidate at all this cycle (full,
+    // unknown SOC, or infeasible even with its SOC-urgency bonus).
+    score: number | undefined;
     lastCommandOk: boolean | undefined;
   }[];
 };
@@ -87,7 +91,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       Object.entries(statusBySn).map(([sn, s]) => [sn, Result.isErr(s) ? undefined : s.acOutputWatts]),
     );
 
-    const { watts: targets, acOn } = allocate(sns, socBySn, acInputBySn, acOutputBySn, totalWatts, {
+    const { watts: targets, acOn, scores } = allocate(sns, socBySn, acInputBySn, acOutputBySn, totalWatts, {
       min: deps.chargeLimitMin,
       max: deps.chargeLimitMax,
       minToCharge: deps.minSolarToChargeWatts,
@@ -117,6 +121,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
         acOutputWatts: Result.isErr(status) ? undefined : status.acOutputWatts,
         targetWatts: target,
         acOn: acOn[sn],
+        score: scores[sn],
         lastCommandOk: Result.isOk(commandResult),
       });
     }
@@ -146,7 +151,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
               `${d.name ?? d.sn}:${d.acOn ? "ON" : "OFF"},soc=${d.batterySoc ?? "?"}%,` +
               `in=${d.acInputWatts === undefined ? "?" : r1(d.acInputWatts)}W,` +
               `out=${d.acOutputWatts === undefined ? "?" : r1(d.acOutputWatts)}W,` +
-              `target=${r1(d.targetWatts)}W`,
+              `target=${r1(d.targetWatts)}W,score=${d.score === undefined ? "-" : r1(d.score)}`,
           )
           .join(" "),
     );

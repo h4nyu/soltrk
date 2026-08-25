@@ -4,6 +4,14 @@
 // knob.
 const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
 
+// Per point of SOC below 100%, how much of a virtual watt bonus a candidate
+// gets when ranked against others (see allocate()'s docstring) - lets a
+// low-SOC device outrank (and, if needed, outright win despite a nominally
+// infeasible request from) a candidate that's already drawing most of the
+// solar, without waiting for that incumbent to finish or for the hard
+// critical-SOC floor in GatedBatteryDriver to kick in.
+const SOC_URGENCY_BONUS_WATTS_PER_PERCENT = 3;
+
 export type AllocatorLimits = {
   min: number;
   max: number;
@@ -20,39 +28,54 @@ export type Allocation = {
   // physical smart-plug decision for gated devices (an ungated device has no
   // way to act on "false" and just ignores this).
   acOn: Record<string, boolean>;
+  // Diagnostic only: each feasible candidate's ranking score this cycle
+  // (lower wins - see the docstring below). Omitted for anything that
+  // wasn't a feasible candidate (full, unknown SOC, or infeasible even with
+  // its urgency bonus) - present for the winner and every candidate it beat.
+  scores: Record<string, number>;
 };
 
 /**
  * Balance-evaluation charging: there's no fixed charge order between
  * devices - whichever non-full (SOC < 100%) device would leave the overall
- * grid balance closest to zero (without backfeeding) is switched on this
- * cycle. A battery that never gets its turn here can't actually run dry:
- * that's GatedBatteryDriver's job (a critical-SOC rescue forces its plug
- * open regardless of what this function decides), so this function is free
- * to optimize purely for solar utilization rather than fairness - a device
- * with little or no load of its own naturally reaches 100% quickly and
- * drops out of contention, handing the turn to whoever's next.
+ * grid balance closest to zero (without backfeeding), after weighting for
+ * how low its own SOC is, is switched on this cycle. A battery that never
+ * gets its turn here can't actually run dry: that's GatedBatteryDriver's
+ * job (a critical-SOC rescue forces its plug open regardless of what this
+ * function decides) - but waiting all the way for that hard floor was
+ * observed leaving a device sitting neglected for an hour-plus at a
+ * uncomfortably low SOC while a peer that had *already* recovered from its
+ * own critical rescue kept winning purely on solar-utilization efficiency
+ * (see SOC_URGENCY_BONUS_WATTS_PER_PERCENT below). A device with little or
+ * no load of its own still naturally reaches 100% quickly and drops out of
+ * contention on its own, handing the turn to whoever's next.
  *
  * For each candidate `sn`, the achievable request is:
  *
  *   remainingWatts = netWatts - (every *other* device's measured AC input)
  *   requestWatts   = remainingWatts - acOutputWattsBySn[sn] - CHARGE_CONVERSION_OVERHEAD_WATTS
+ *   urgencyBonus   = SOC_URGENCY_BONUS_WATTS_PER_PERCENT * (100 - soc)
  *
  * `acOutputWattsBySn[sn]` is `sn`'s own household load - measured directly
  * from the battery's telemetry regardless of whether its AC input is
- * currently on, so it's known for every candidate up front. Switching `sn`
- * on would draw `requestWatts + acOutputWattsBySn[sn] +
- * CHARGE_CONVERSION_OVERHEAD_WATTS` in total (the requested charge current,
- * plus its own load passing through, plus the fixed conversion loss) - a
- * candidate is only feasible if that fits within `remainingWatts` at all
- * (i.e. `requestWatts >= limits.min`), and among feasible candidates the one
- * with the least leftover (closest to zero balance) wins, since that's the
- * one making the fullest use of the available solar. Whenever nothing else
- * is drawing, every feasible candidate reaches the same (zero) balance
- * regardless of its own load - the request just absorbs whatever's left
- * over - so ties are broken toward the lowest `acOutputWattsBySn`: more of
+ * currently on, so it's known for every candidate up front. A candidate is
+ * feasible if `requestWatts + urgencyBonus >= limits.min` - the bonus can
+ * make a candidate feasible (and win) even when the raw math says every
+ * watt of solar is already spoken for by a peer's measured draw, precisely
+ * for the scenario above: a low-SOC device shouldn't have to wait for a
+ * well-charged peer to finish before getting a look-in. When that happens,
+ * the actual request sent is still just `limits.min` (clamped up from
+ * whatever negative number the raw math produced) - the bonus only ever
+ * affects *who* wins, never how many watts get requested beyond what the
+ * real numbers justify, so a winning low-SOC candidate costs at most a
+ * temporary bit of extra grid draw (self-correcting again next cycle) as
+ * measured input catches up, the same accepted tradeoff already made for
+ * hardware not obeying requested wattage precisely (see below). Among
+ * feasible candidates, the one with the lowest `balance - urgencyBonus`
+ * wins, since that's the fullest use of solar once urgency is accounted
+ * for; ties are broken toward the lowest `acOutputWattsBySn`, so more of
  * its charge current goes into the battery rather than passing straight
- * through, so it reaches 100% (and hands off) sooner. Subtracting other
+ * through and it reaches 100% (handing off) sooner. Subtracting other
  * devices' *measured* input (not the candidate's own) keeps this
  * self-correcting without the self-feedback oscillation that made us avoid
  * measured-input control for a device's own request.
@@ -109,14 +132,15 @@ export function allocate(
     }
   }
 
-  if (netWatts < limits.minToCharge) return { watts, acOn };
+  if (netWatts < limits.minToCharge) return { watts, acOn, scores: {} };
 
   const candidates = sns.filter((sn) => {
     const soc = socBySn[sn];
     return soc !== undefined && soc < 100;
   });
 
-  let best: { sn: string; requestWatts: number; balance: number; ownLoad: number } | undefined;
+  const scores: Record<string, number> = {};
+  let best: { sn: string; requestWatts: number; score: number; ownLoad: number } | undefined;
   for (const sn of candidates) {
     const otherInputWatts = sns
       .filter((other) => other !== sn)
@@ -124,22 +148,30 @@ export function allocate(
     const remainingWatts = netWatts - otherInputWatts;
     const ownLoad = acOutputWattsBySn[sn] ?? 0;
     const requestWatts = remainingWatts - ownLoad - CHARGE_CONVERSION_OVERHEAD_WATTS;
-    if (requestWatts < limits.min) continue;
-    const clampedWatts = Math.min(requestWatts, limits.max);
+    // socBySn[sn] is always defined here - sn came from `candidates`, which
+    // already filtered out undefined SOCs.
+    const urgencyBonus = SOC_URGENCY_BONUS_WATTS_PER_PERCENT * (100 - (socBySn[sn] as number));
+    if (requestWatts + urgencyBonus < limits.min) continue;
+    // The bonus only ever decides *who* wins - the dispatched wattage is
+    // still exactly what the real numbers justify (clamped up to the
+    // hardware floor when urgency alone made this candidate feasible).
+    const clampedWatts = Math.max(limits.min, Math.min(requestWatts, limits.max));
     const balance = remainingWatts - (clampedWatts + ownLoad + CHARGE_CONVERSION_OVERHEAD_WATTS);
-    // Whenever nothing else is drawing, every feasible candidate reaches the
-    // same (zero) balance - the request just absorbs whatever's left over
-    // regardless of load. Break that tie toward the lowest own load: more of
-    // its charge current goes into the battery rather than passing straight
-    // through, so it reaches 100% (and hands off to the next candidate)
-    // sooner.
-    if (!best || balance < best.balance || (balance === best.balance && ownLoad < best.ownLoad)) {
-      best = { sn, requestWatts: clampedWatts, balance, ownLoad };
+    const score = balance - urgencyBonus;
+    scores[sn] = score;
+    // Whenever nothing else is drawing and SOCs are equal, every feasible
+    // candidate reaches the same score - the request just absorbs whatever's
+    // left over regardless of load. Break that tie toward the lowest own
+    // load: more of its charge current goes into the battery rather than
+    // passing straight through, so it reaches 100% (and hands off to the
+    // next candidate) sooner.
+    if (!best || score < best.score || (score === best.score && ownLoad < best.ownLoad)) {
+      best = { sn, requestWatts: clampedWatts, score, ownLoad };
     }
   }
-  if (!best) return { watts, acOn };
+  if (!best) return { watts, acOn, scores };
 
   watts[best.sn] = best.requestWatts;
   acOn[best.sn] = true;
-  return { watts, acOn };
+  return { watts, acOn, scores };
 }
