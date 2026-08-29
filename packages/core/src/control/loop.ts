@@ -32,7 +32,7 @@ export type StateSnapshot = {
     // cycle (see AcMode) - "charge" and "passthrough" both keep the plug
     // closed, but only the former fills the battery (and pays the conversion
     // overhead to do it). This is what the driver reported back, so it
-    // reflects a critical-SOC rescue having overridden the allocator rather
+    // reflects the discharge floor having overridden the allocator rather
     // than the allocator's own request.
     mode: AcMode;
     // The allocator's ranking score for this device this cycle (lower won) -
@@ -141,7 +141,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       // interrupted - so skipping "unchanged" calls would let both drift.
       const commandResult = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, mode);
       // What the driver actually did, which can differ from what was asked -
-      // a critical-SOC rescue turns `battery` into `passthrough` (see
+      // the discharge floor turns `battery` into `passthrough` (see
       // GatedBatteryDriver). Fall back to the request only when the command
       // failed outright and there's nothing better to record.
       const appliedMode = Result.isErr(commandResult) ? mode : commandResult;

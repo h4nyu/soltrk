@@ -28,8 +28,8 @@ const driverFactories: Record<string, () => BatteryDriver> = {
       inner: getDriver("anker"),
       plugsBySn: gatesBySn(loadTuyaPlugs()),
       offWatts: config.chargeLimitMin,
-      criticalSocPercent: config.gatedCriticalSocPercent,
-      recoverySocPercent: config.gatedRecoverySocPercent,
+      dischargeFloorSocPercent: config.gatedDischargeFloorSocPercent,
+      dischargeResumeSocPercent: config.gatedDischargeResumeSocPercent,
     });
   },
 };

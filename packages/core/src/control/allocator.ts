@@ -9,7 +9,7 @@ const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
 // low-SOC device outrank (and, if needed, outright win despite a nominally
 // infeasible request from) a candidate that's already drawing most of the
 // solar, without waiting for that incumbent to finish or for the hard
-// critical-SOC floor in GatedBatteryDriver to kick in.
+// discharge floor in GatedBatteryDriver to kick in.
 const SOC_URGENCY_BONUS_WATTS_PER_PERCENT = 3;
 
 // Flat virtual watt bonus for whichever candidate won the *previous* cycle
@@ -57,11 +57,11 @@ export type Allocation = {
  * grid balance closest to zero (without backfeeding), after weighting for
  * how low its own SOC is, is switched on this cycle. A battery that never
  * gets its turn here can't actually run dry: that's GatedBatteryDriver's
- * job (a critical-SOC rescue forces its plug open regardless of what this
+ * job (the discharge floor closes its plug regardless of what this
  * function decides) - but waiting all the way for that hard floor was
  * observed leaving a device sitting neglected for an hour-plus at a
  * uncomfortably low SOC while a peer that had *already* recovered from its
- * own critical rescue kept winning purely on solar-utilization efficiency
+ * own trip to the floor kept winning purely on solar-utilization efficiency
  * (see SOC_URGENCY_BONUS_WATTS_PER_PERCENT below). A device with little or
  * no load of its own still naturally reaches 100% quickly and drops out of
  * contention on its own, handing the turn to whoever's next.
@@ -114,7 +114,7 @@ export type Allocation = {
  * conversion loss and cycle wear that simply doesn't happen.
  *
  * Everything else is disconnected and runs off its own battery. The
- * critical-SOC rescue in GatedBatteryDriver can override that to keep a
+ * discharge floor in GatedBatteryDriver can override that to keep a
  * near-empty battery alive - that decision needs per-device forced state
  * and stays there.
  *

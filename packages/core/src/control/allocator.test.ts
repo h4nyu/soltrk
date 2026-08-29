@@ -30,7 +30,7 @@ describe("allocate", () => {
   });
 
   test("subtracts other devices' measured input from a candidate's target", () => {
-    // SN2 is force-charging (critical rescue) at a measured 130W - solar
+    // SN2 is drawing a measured 130W - solar
     // 500W leaves 370W for SN1, minus 33W conversion overhead. Both at the
     // same SOC so the SOC-urgency bonus cancels out and doesn't confound
     // this input-subtraction behavior with the tie-break it'd otherwise win
@@ -43,7 +43,7 @@ describe("allocate", () => {
     // Two force-charging peers at 130W each already exceed 200W of solar,
     // leaving nothing for SN1 under the raw math - but SN1 is just as low
     // on SOC as they are, so its urgency bonus makes it feasible anyway
-    // rather than making it wait for its own critical-SOC floor to trip.
+    // rather than making it wait for its own discharge floor to trip.
     const result = allocate(
       [SN1, SN2, "sn-3"],
       { [SN1]: 10, [SN2]: 10, "sn-3": 10 },
@@ -63,7 +63,7 @@ describe("allocate", () => {
     // 100W household load) looks deeply infeasible under the raw math
     // (50 - 100 - 33 = -83W) - but its urgency bonus flips the ranking, so
     // it wins and gets switched on at the hardware minimum instead of
-    // waiting for SN2 to finish or for its own critical-SOC floor to trip.
+    // waiting for SN2 to finish or for its own discharge floor to trip.
     const result = allocate([SN1, SN2], { [SN1]: 10, [SN2]: 90 }, { [SN2]: 400 }, { [SN1]: 100 }, 450, LIMITS);
     assert.equal(result.acOn[SN1], true);
     assert.equal(result.acOn[SN2], false);

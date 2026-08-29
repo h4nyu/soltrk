@@ -58,8 +58,8 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   There's no fixed charge order between units - every cycle, each
   not-yet-full unit is evaluated as the hypothetical *active* charging
   target: charge at the current solar output *minus whatever the other
-  units are already measured to be drawing* (their critical-SOC rescue
-  charging, or a full unit's passthrough - see below) *minus that unit's own
+  units are already measured to be drawing* (their passthrough draw, or a
+  full unit's - see below) *minus that unit's own
   measured household load* (`acOutputWatts`, known up front regardless of
   whether its AC input is on) *minus a fixed ~33W conversion overhead*,
   capped at the hardware max (1200W). Whichever feasible unit leaves the
@@ -68,7 +68,7 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   100% quickly and hands the turn to the next-best unit on its own, so there's
   no need to separately track fairness or ordering. A unit that must never be
   allowed to run dry (e.g. one powering an actual refrigerator) is protected
-  by the critical-SOC rescue below, not by charging order. No gradual
+  by the discharge floor below, not by charging order. No gradual
   ramp-up: an earlier version ramped the request, but once it's capped at
   actual solar the ramp just added lag, and real solar changes gradually
   enough on its own (observed: roughly an hour from 0 to peak in the
@@ -207,14 +207,14 @@ explicitly ("TOUモードを終了しました … 電力モードは[標準モ�
 usage mode is re-sent every cycle rather than cached, exactly like the
 wattage command.
 
-**Consequence for the critical-SOC rescue.** The rescue in
-`GatedBatteryDriver` uses `passthrough`, not `charge`: its job is to stop a
-battery draining, and passthrough does that by powering the device's load
-from AC directly - without buying grid power to push into a battery, and
-without paying the conversion overhead to do it. A rescued unit therefore
+**Consequence for the discharge floor.** The floor in `GatedBatteryDriver`
+switches a unit to `passthrough`, not `charge`: its job is to stop a battery
+draining, and passthrough does that by powering the unit's load from AC
+directly - without buying grid power to push into a battery, and without
+paying the conversion overhead to do it. A unit below the floor therefore
 holds its SOC steady rather than climbing; refilling it is left to the
-allocator once there's solar to do it with. A rescue never downgrades a unit
-the allocator already picked to charge.
+allocator once there's solar to do it with. The floor never downgrades a
+unit the allocator already picked to charge.
 
 ## Known caveats
 
@@ -395,21 +395,31 @@ cycle's active target, and restores it (plus still sending the normal
 wattage command for fine control) whenever it is - any sn with no matching
 plug entry is unaffected and behaves exactly like plain `"anker"`.
 
-**Safety floor:** a gated device can be cut off from AC for hours at a
+**Discharge floor:** a gated device can be cut off from AC for hours at a
 time (no solar, not this cycle's pick) with nothing else stopping its own
 battery from draining down to zero while it keeps powering whatever it's
-actually plugged into (e.g. a real refrigerator). At/below
-`GATED_CRITICAL_SOC_PERCENT` (default 6%), `GatedBatteryDriver` opens the
-gate and charges at whatever wattage it's given (normally the hardware's
-own minimum) regardless of solar availability or the allocator's own
-decision - this overrides everything else. It
-stays forced open until SOC climbs back up to the higher
-`GATED_RECOVERY_SOC_PERCENT` (default 20%), not the same 6% line - without
-that gap, a SOC sitting right at the critical threshold would flip the
-plug on/off every single poll cycle. This means `setChargeLimit` must run
-every cycle even when the requested wattage hasn't changed (the loop no
-longer skips "unchanged" calls, since a gated device's actual decision can
-depend on live SOC alone).
+actually plugged into (e.g. a real refrigerator). Below
+`GATED_DISCHARGE_FLOOR_SOC_PERCENT` (default 30%), `GatedBatteryDriver`
+stops letting it run on its battery: `battery` becomes `passthrough`, so
+the plug closes and its load is fed from AC instead.
+
+That is the entire override - it removes `battery` as an option, it does
+not pin the device to `passthrough`. `charge` still passes straight
+through, and is the only thing that raises the SOC again, since passthrough
+holds it level. So the sequence is: floor → passthrough (stop draining) →
+charge (SOC recovers, once there's solar) → discharging allowed again at
+`GATED_DISCHARGE_RESUME_SOC_PERCENT` (default 40%). That resume line sits
+above the floor so a device that just touched it has to build a real buffer
+before being handed back to discharging, rather than crossing the line
+again a few minutes later.
+
+Passthrough rather than a forced charge is deliberate: it costs only the
+device's own load off the grid, with no ~33W conversion overhead and
+nothing bought to push into the battery.
+
+This means `setChargeLimit` must run every cycle even when the requested
+wattage hasn't changed (the loop no longer skips "unchanged" calls, since a
+gated device's actual decision can depend on live SOC alone).
 
 Confirmed live: with 冷蔵庫's TOU schedule set to "オフピーク" (which would
 otherwise keep charging from AC no matter what wattage is requested - see

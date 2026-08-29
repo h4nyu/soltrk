@@ -14,13 +14,16 @@ x-env: &env
   # of solar (fridge compressor, routers, etc). 0 unless you know better -
   # only raise it to a value the house never dips below.
   HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
-  # Below this SOC, a gated device charges at minimum rate regardless of
-  # solar/the allocator - the AC cutoff must never fully drain a battery powering
-  # something that can't lose power (e.g. an actual refrigerator).
-  GATED_CRITICAL_SOC_PERCENT: &GATED_CRITICAL_SOC_PERCENT ${GATED_CRITICAL_SOC_PERCENT:-6}
-  # Once forced on above, stays on until SOC reaches this higher threshold -
-  # the gap avoids flipping the plug on/off every cycle near the critical line.
-  GATED_RECOVERY_SOC_PERCENT: &GATED_RECOVERY_SOC_PERCENT ${GATED_RECOVERY_SOC_PERCENT:-20}
+  # Below this SOC a gated device stops running off its own battery: its plug
+  # closes and it feeds its load from AC in passthrough instead. The AC cutoff
+  # must never fully drain a battery powering something that can't lose power
+  # (e.g. an actual refrigerator). This doesn't charge it - passthrough holds
+  # SOC level - it only stops the drain.
+  GATED_DISCHARGE_FLOOR_SOC_PERCENT: &GATED_DISCHARGE_FLOOR_SOC_PERCENT ${GATED_DISCHARGE_FLOOR_SOC_PERCENT:-30}
+  # How far back up it has to be charged before running on its battery again -
+  # above the floor, so it builds a real buffer instead of being handed back to
+  # discharging on the next watt of charge.
+  GATED_DISCHARGE_RESUME_SOC_PERCENT: &GATED_DISCHARGE_RESUME_SOC_PERCENT ${GATED_DISCHARGE_RESUME_SOC_PERCENT:-40}
 
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path

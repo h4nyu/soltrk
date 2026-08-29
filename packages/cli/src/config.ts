@@ -46,19 +46,18 @@ export function loadConfig() {
     // margin. 0 (default/safe) if unknown; only raise this to a value you're
     // confident the house never dips below.
     houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 0),
-    // Below this SOC, a gated device (see GatedBatteryDriver) is charged at
-    // its minimum rate regardless of solar availability or the allocator's
-    // own balance evaluation - the
-    // physical AC cutoff must never be allowed to fully drain a battery
-    // that's powering something that can't just lose power (e.g. an actual
-    // refrigerator).
-    gatedCriticalSocPercent: Number(process.env.GATED_CRITICAL_SOC_PERCENT ?? 6),
-    // Once forced on by the critical floor above, a gated device keeps
-    // charging until SOC reaches this (higher) threshold before normal
-    // solar-based control resumes - a gap between the two
-    // prevents rapidly flipping the plug on/off if SOC hovers right at the
-    // critical line.
-    gatedRecoverySocPercent: Number(process.env.GATED_RECOVERY_SOC_PERCENT ?? 20),
+    // Below this SOC, a gated device (see GatedBatteryDriver) is no longer
+    // allowed to run off its own battery: its plug closes and it feeds its
+    // load from AC in passthrough instead. The physical AC cutoff must never
+    // be allowed to fully drain a battery powering something that can't just
+    // lose power (e.g. an actual refrigerator). This doesn't charge it -
+    // passthrough holds SOC level - it only stops the drain.
+    gatedDischargeFloorSocPercent: Number(process.env.GATED_DISCHARGE_FLOOR_SOC_PERCENT ?? 30),
+    // How far back up a device has to be charged before it's allowed to run
+    // on its battery again. Above the floor so a device that just touched it
+    // has to build a real buffer first, rather than being handed straight
+    // back to discharging on the next watt of charge.
+    gatedDischargeResumeSocPercent: Number(process.env.GATED_DISCHARGE_RESUME_SOC_PERCENT ?? 40),
     stateFilePath: STATE_FILE_PATH,
   };
 }

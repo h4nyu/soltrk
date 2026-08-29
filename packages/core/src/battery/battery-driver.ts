@@ -46,7 +46,7 @@ export type BatteryDriver = {
   // meaningful for `charge`.
   //
   // Returns the mode actually applied, which is not always the one asked
-  // for: GatedBatteryDriver's critical-SOC rescue overrides `battery` with
+  // for: GatedBatteryDriver's discharge floor overrides `battery` with
   // `passthrough`. The caller records that rather than its own request, so
   // logs and state.json describe what the hardware was really told to do.
   setChargeLimit(sn: string, watts: number, mode?: AcMode): Promise<Result<AcMode>>;

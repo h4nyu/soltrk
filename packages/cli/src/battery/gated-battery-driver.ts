@@ -27,28 +27,35 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * only when more than `offWatts` (the allocator's `chargeLimitMin`, what
  * deprioritized devices are sent) was requested.
  *
- * Safety override: unlike a plain "anker" device, a gated one can be cut off
- * from AC entirely (no solar, deprioritized) with nothing to stop its own
- * battery draining down to zero powering whatever it's plugged into (e.g.
- * an actual refrigerator) - so at/below `criticalSocPercent`, the gate opens
- * regardless of solar availability or the allocator's own balance
- * evaluation. The rescue runs the device in `passthrough`, not `charge`:
- * the point is to stop the battery draining, and passthrough does that by
- * feeding the device's load from AC directly - without buying grid power to
- * push into the battery, and without paying the ~33W conversion overhead to
- * do it. A rescued battery therefore holds its SOC steady rather than
- * climbing; actually refilling it is left to the allocator picking it as a
- * charge target once there's solar to do it with.
- * It stays forced open until SOC recovers to `recoverySocPercent` (a higher
- * threshold, not the same one) rather than immediately releasing at
- * `criticalSocPercent` again - without that gap, a SOC hovering right at the
- * critical line would flip the plug on/off every single poll cycle.
- * This state is tracked per sn in `forcedSns`, since the decision depends on
- * *why* the gate was opened last time (forced vs. the allocator's own
- * decision), not just the current request in isolation - and the critical-
- * SOC check above still runs every cycle regardless of whether the gate
- * itself needs touching (see loop.ts, which calls this every cycle
- * unconditionally). The physical `plug.setOn()` call itself is only made
+ * Discharge floor: unlike a plain "anker" device, a gated one can be cut
+ * off from AC entirely (no solar, not the charging pick) with nothing to
+ * stop its own battery draining to zero powering whatever it's plugged into
+ * (e.g. an actual refrigerator). So below `dischargeFloorSocPercent`, this
+ * driver simply stops letting it run on its battery: `battery` is replaced
+ * with `passthrough`, feeding the device's load from AC instead.
+ *
+ * That is all the floor does - it takes `battery` off the table, it does not
+ * pin the device to `passthrough`. `charge` still passes straight through,
+ * and is in fact the only thing that moves the SOC back up: passthrough
+ * holds it level, so a device below the floor sits there until the
+ * allocator picks it as a charging target once there's solar for it. The
+ * cycle reads floor -> passthrough (stop draining) -> charge (SOC recovers)
+ * -> discharging allowed again at `dischargeResumeSocPercent`.
+ *
+ * Passthrough rather than a forced charge is the point: it costs only the
+ * device's own load off the grid, with no ~33W conversion overhead and
+ * nothing bought to push into the battery.
+ *
+ * `dischargeResumeSocPercent` sits above the floor so a device that just
+ * touched it isn't handed straight back to discharging on the next watt of
+ * charge - it has to build a real buffer first. (It also rules out any
+ * flapping at the line, though passthrough holding SOC level mostly does
+ * that on its own.) Which devices are currently below the floor is tracked
+ * per sn in `belowFloorSns`, since between the two thresholds the answer
+ * depends on which side the device came from, not on the current SOC alone
+ * - and that check runs every cycle regardless of whether the gate itself
+ * needs touching (see loop.ts, which calls this unconditionally). The
+ * physical `plug.setOn()` call itself is only made
  * when the desired state actually differs from the last one successfully
  * applied (`lastGateBySn`) - every physical plug in this project shares the
  * same LAN with the GTB-800 solar readings, which are known to time out
@@ -62,11 +69,11 @@ export const GatedBatteryDriver = (props: {
   inner: BatteryDriver;
   plugsBySn: Map<string, PowerGate>;
   offWatts: number;
-  criticalSocPercent: number;
-  recoverySocPercent: number;
+  dischargeFloorSocPercent: number;
+  dischargeResumeSocPercent: number;
 }): BatteryDriver => {
-  const { inner, plugsBySn, offWatts, criticalSocPercent, recoverySocPercent } = props;
-  const forcedSns = new Set<string>();
+  const { inner, plugsBySn, offWatts, dischargeFloorSocPercent, dischargeResumeSocPercent } = props;
+  const belowFloorSns = new Set<string>();
   const lastGateBySn = new Map<string, boolean>();
 
   const getStatus: BatteryDriver["getStatus"] = (sn) => inner.getStatus(sn);
@@ -78,23 +85,23 @@ export const GatedBatteryDriver = (props: {
     const status = await inner.getStatus(sn);
     const soc = Result.isErr(status) ? undefined : status.batterySoc;
     if (soc !== undefined) {
-      if (soc <= criticalSocPercent) forcedSns.add(sn);
-      else if (soc >= recoverySocPercent) forcedSns.delete(sn);
-      // Between the two thresholds (or if soc is unknown this cycle):
-      // leave whatever forced state was already in effect unchanged.
+      if (soc <= dischargeFloorSocPercent) belowFloorSns.add(sn);
+      else if (soc >= dischargeResumeSocPercent) belowFloorSns.delete(sn);
+      // Between the two thresholds (or if soc is unknown this cycle): leave
+      // whichever side the device was already on unchanged.
     }
-    const critical = forcedSns.has(sn);
-    if (critical) {
+    const belowFloor = belowFloorSns.has(sn);
+    if (belowFloor) {
       console.warn(
-        `[gated:${sn}] SOC ${soc}% forcing AC on in passthrough regardless of solar/allocator (releases at ${recoverySocPercent}%)`,
+        `[gated:${sn}] SOC ${soc}% is below the ${dischargeFloorSocPercent}% discharge floor - on AC instead of its battery (discharging resumes at ${dischargeResumeSocPercent}%)`,
       );
     }
 
-    // A rescue only ever *adds* AC in passthrough - it never downgrades a
-    // device the allocator already chose to charge, since charging keeps the
-    // battery filling rather than merely holding.
+    // Below the floor, `battery` becomes `passthrough` - that's the whole
+    // override. `charge` is left alone: it's better than passthrough here
+    // (it refills rather than just holding) and it's the only way back up.
     const effectiveMode =
-      critical && mode !== "charge" ? "passthrough" : (mode ?? (watts > offWatts ? "charge" : "battery"));
+      belowFloor && mode !== "charge" ? "passthrough" : (mode ?? (watts > offWatts ? "charge" : "battery"));
 
     const gateOn = effectiveMode !== "battery";
     if (lastGateBySn.get(sn) !== gateOn) {
@@ -105,7 +112,7 @@ export const GatedBatteryDriver = (props: {
     if (!gateOn) return "battery";
     const result = await inner.setChargeLimit(sn, watts, effectiveMode);
     // Report the mode this driver decided on, not whatever the inner adapter
-    // makes of it - the rescue override above is this layer's call, and it's
+    // makes of it - the floor override above is this layer's call, and it's
     // what the plug was actually switched to.
     return Result.isErr(result) ? result : effectiveMode;
   };
