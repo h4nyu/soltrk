@@ -357,13 +357,17 @@ happen.
   state the allocator models, but also a decision to discard whatever is
   being generated.
 
-  The history rules it out without anyone tracing a cable. Across the
-  recorded window there are 94 daylight cycles where every device's AC
-  input was zero - so every gated plug open, with two units visibly running
-  loads off their own batteries - and the microinverters went on reporting
-  100W to 532W throughout. They cannot have been isolated. Whatever
-  explains the 2026-07-08 chart, it isn't the wiring; a washout is the
-  likeliest answer, and that day is too old to be in the recorded history.
+  The wiring has since been confirmed directly - the microinverters plug
+  into the house circuit - and the history says the same thing without
+  anyone tracing a cable. Across the recorded window there are 94 daylight
+  cycles where every device's AC input was zero, so every gated plug open,
+  several with two units visibly running loads off their own batteries, and
+  the microinverters went on reporting 100W to 532W throughout. They cannot
+  have been isolated. Worth keeping as a worked example: a meter chart alone
+  was enough to suggest a serious design fault, and the telemetry already
+  in hand settled it at no cost. Whatever explains the 2026-07-08 chart it
+  isn't the wiring; a washout is the likeliest answer, and that day predates
+  the recorded history.
 - **A plug can be switched by something other than soltrk.** The Tuya Smart
   Life app keeps its own automations and scenes, and any left over from
   before a plug was wired into soltrk will keep firing - turning the plug on
