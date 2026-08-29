@@ -266,11 +266,88 @@ unit the allocator already picked to charge.
   That threshold is derived rather than configured, because the two move
   together by definition. When it *was* a separate setting, lowering
   `chargeLimitMin` left it stranded at the old value and solar that could
-  have been charged with went unused until someone noticed. If you know a constant amount of house load is always
-  present (fridge compressor, routers, etc), set `HOUSE_STANDBY_WATTS` to it
-  - that much of solar is treated as already spoken for and doesn't need
-  covering by the charger. Leave at `0` (default) if unsure; setting it too
-  high is what could actually cause backfeed.
+  have been charged with went unused until someone noticed.
+
+  `HOUSE_STANDBY_WATTS` is that constant house load - the part soltrk never
+  sees, since it only meters what's behind the battery units. That much of
+  solar is treated as already spoken for and doesn't need covering by the
+  charger. What's wanted is the floor the house *never* dips below, not its
+  average, so only loads that genuinely never switch off count; lighting
+  doesn't, however reliably it gets used. Leave at `0` (default) if unsure;
+  setting it too high is what could actually cause backfeed.
+
+  **Measuring it without a meter.** The electricity retailer's own app
+  (Octopus here) plots smart-meter consumption per hour, and any day the
+  house was empty reads out the floor directly. Two such days:
+
+  - 2026-02-12, before the batteries: 1.60 kWh total, with bars at 0.10
+    kWh/h from 00:00-07:00 and 16:00-23:00 and *nothing at all* from
+    08:00-15:00. 16 bars x 0.10 = 1.60 exactly.
+  - 2026-07-08, batteries in service, every unit on battery all day: 2.90
+    kWh, 0.10 kWh/h essentially flat across the whole 24h, rising to 0.20
+    for the last two hours.
+
+  So the floor is **100W**, about 2.4 kWh/day, against the 30W it had been
+  guessed at. The setting is 80 rather than 100, deliberately a little under
+  the measurement: the error directions aren't symmetric. Set it above the
+  true floor and the allocator reserves solar the house won't actually take,
+  and the remainder backfeeds. Set it below and it asks for a slightly
+  larger charge than solar covers, which the house absorbs and the grid tops
+  up - no export, and the only cost is the round-trip loss on those few
+  watts. So the margin belongs on the low side. Taken to its conclusion that
+  argues for lower still (in the replay, export over the period was 0.25 kWh
+  at 30W against 0.56 at 80W and 0.76 at 100W), but every one of these
+  differences is on the order of a yen a day, so the value is chosen to
+  state the truth with a margin rather than to win a rounding error.
+
+  Note that 100W is far more than
+  the three 24h ventilation fans and three air purifiers it was assumed to
+  be (those are a few watts and 5-15W each); 50-70W of it is unaccounted
+  for, and finding it is worth more than anything the allocator does - 100W
+  standing is about 33,000 yen a year, against the roughly 5,900 the whole
+  passthrough rework saves.
+
+  Two cautions on reading these charts. Check the bucket width before
+  dividing: the bars are hourly here, confirmed by the total (16 bars of
+  0.10 is 1.60; at half-hourly the same 16 hours would need 32 bars and
+  total 3.20) and by measuring the plot - 16 bars evenly spaced 35px apart
+  with a 313px gap, so 24 slots of which 8 are empty. And the reading is
+  only the floor on a day with *no* solar reaching the house; the Feb 12
+  daytime bars are absent precisely because solar cancelled the house load
+  outright, which is what makes the empty-house night hours the number to
+  use.
+
+  Replaying 5.5 days of recorded profile through 0/15/30/50/80/110W showed
+  everything from 0 to 50W landing within +-0.2 kWh of each other over the
+  whole period - about 1 yen a day, and non-monotonic, so that window is
+  noise rather than a curve with an optimum in it. Only 80W and above lost
+  clearly, by holding back solar that then got exported for nothing (0.33 to
+  1.89 kWh over the period, against 0.13 to 0.82 at 30W). That sweep is why
+  the value isn't worth tuning - but it also assumed a constant house draw,
+  which penalises high settings by exporting everything above it, so it
+  argues for setting the measured floor rather than against it. Note the
+  recorded period was overcast throughout and rarely had surplus, which is
+  exactly when this setting does the least - a sunny stretch would separate
+  the options more.
+- **Unresolved: solar may not reach the house when every plug is open.**
+  The two empty-house days above are close to a controlled experiment, and
+  they don't agree. On 2026-02-12, before the batteries, the meter read
+  *zero* for eight straight midday hours - solar cancelled the house load
+  outright. On 2026-07-08, with the batteries in service and every unit on
+  `battery` (so every plug open), the meter read the full 100W right through
+  midday, in July, with a longer and stronger day. No cancellation at all.
+
+  That is what you would see if the microinverters sit behind the smart
+  plugs rather than on the house circuit: open every plug and their output
+  has nowhere to go, so all solar is lost. It would mean `battery` is not
+  the neutral "run on your own cells" state the allocator models it as, but
+  also a decision to discard whatever is being generated. The recorded
+  window can't settle it - the units were charging through every sunny hour,
+  drawing almost exactly the solar being produced (551W generated against
+  553W of AC input at 2026-08-24 11:00), so both wirings predict nearly the
+  same meter reading. Ruling it out needs either the weather for 2026-07-08
+  (a washout would explain the flat day innocently) or a deliberate test:
+  force every unit to `battery` for an hour of real sun and watch the meter.
 - **A plug can be switched by something other than soltrk.** The Tuya Smart
   Life app keeps its own automations and scenes, and any left over from
   before a plug was wired into soltrk will keep firing - turning the plug on

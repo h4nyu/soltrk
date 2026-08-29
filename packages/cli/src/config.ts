@@ -50,11 +50,17 @@ export function loadConfig() {
     // passthrough-load confusion diagnosed that day.)
     chargeLimitMin: 100,
     chargeLimitMax: 1200,
-    // Constant floor on house consumption (fridge compressor, routers, etc.)
-    // that's safe to assume is always drawn regardless of solar - that much
-    // of solar output never needs covering by the charger's ceil-rounding
-    // margin. 0 (default/safe) if unknown; only raise this to a value you're
-    // confident the house never dips below.
+    // Constant floor on house consumption that's safe to assume is always
+    // drawn regardless of solar - that much of solar output never needs
+    // covering by the charger's ceil-rounding margin. Wanted is the floor
+    // the house never dips below, not its average, so only loads that never
+    // switch off count (lighting doesn't). 0 (default/safe) if unknown.
+    // Measured at 100W here, off the retailer's own smart-meter chart for
+    // two days the house was empty; .env sets 80, deliberately under the
+    // measurement, because overshooting reserves solar the house won't take
+    // and backfeeds the remainder while undershooting only imports a few
+    // watts. See README. Most of that 100W is still unaccounted for; it's
+    // worth more to find than to model.
     houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 0),
     // Below this SOC, a gated device (see GatedBatteryDriver) is no longer
     // allowed to run off its own battery: its plug closes and it feeds its
