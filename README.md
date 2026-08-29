@@ -92,7 +92,7 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   of conversion loss and cycle wear. Taken to its conclusion, **charging
   never happens while some unit is still on its battery**: the budget a unit
   has to see before it's connected is
-  `min(its load, 83W)`.
+  `min(its load, minSolarToChargeWatts)`.
 
   That threshold reads most easily as a **buffer zone**. Solar below it
   can't start a charge, so it is simply absorbed
@@ -244,16 +244,29 @@ unit the allocator already picked to charge.
 
 ## Known caveats
 
-- **Hardware charge floor**: below `chargeLimitMin` (50W) of requested
-  charge, the charger can't be throttled proportionally - the firmware
-  clamps anything lower back up. The least net solar worth starting a charge
-  with is therefore that floor plus the ~33W conversion overhead, 83W, below
-  which we stop trying to charge at all and just let panel output do
-  whatever it does. It's derived from `chargeLimitMin` rather than
-  configured separately (`minSolarToChargeWatts()` in `allocator.ts`) - the
-  two move together by definition, and when it *was* a separate setting,
-  lowering `chargeLimitMin` left it stranded at the old value and solar that
-  could have been charged with went unused until someone noticed. If you know a constant amount of house load is always
+- **Small charges are mostly loss.** The ~33W conversion overhead is near
+  enough fixed whatever the rate, so charging at 50W costs 83W to deliver
+  (60% efficient, ~54% once the discharge loss is counted), against 75% at
+  100W and 86% at 200W. `chargeLimitMin` (100W) is therefore the least
+  charge worth *starting*, not a hardware limit - the app's own slider stops
+  at 100W but a live test took the API down to 1W and found sub-100W
+  requests do scale the real charge current proportionally.
+
+  It used to be pushed as low as the hardware would tolerate, because a
+  device that shouldn't charge still had to be sent *some* wattage - there
+  was no way to say zero. Passthrough says zero properly now, so the only
+  remaining pressure on this value is upward. What caps it is that it also
+  sets the solar needed before charging starts at all
+  (`minSolarToChargeWatts()` in `allocator.ts`: this plus the 33W overhead,
+  with household loads and `HOUSE_STANDBY_WATTS` on top, so roughly 278W of
+  panel output at 100W) - raise it too far and an overcast day never charges
+  anything. Note that surplus which doesn't charge isn't wasted: it's
+  absorbed by the house at 1:1, which beats storing it at 60%.
+
+  That threshold is derived rather than configured, because the two move
+  together by definition. When it *was* a separate setting, lowering
+  `chargeLimitMin` left it stranded at the old value and solar that could
+  have been charged with went unused until someone noticed. If you know a constant amount of house load is always
   present (fridge compressor, routers, etc), set `HOUSE_STANDBY_WATTS` to it
   - that much of solar is treated as already spoken for and doesn't need
   covering by the charger. Leave at `0` (default) if unsure; setting it too

@@ -22,23 +22,34 @@ export function loadConfig() {
     ankerPassword: required("ANKER_PASSWORD"),
     ankerCountry: process.env.ANKER_COUNTRY ?? "JP",
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 60_000),
-    // The Anker app's own "交流電池充電" slider only goes down to 100W, but a
-    // live test on 2026-08-24 (chargeLimitMin briefly lowered to 1) showed
-    // sub-100W requests (down to ~28W) DO scale the actual charge current
-    // roughly proportionally - the "gets silently clamped to 100W" claim
-    // that used to live here looks like it was really the same
-    // acInputWatts-includes-passthrough-load confusion diagnosed that day,
-    // not a real firmware clamp. That same test also sent full/passthrough
-    // devices a 1W request (never sent by the app itself, since it's below
-    // the slider's own floor) right before 冷蔵庫's status reads briefly
-    // started failing - probably unrelated, but not worth finding out the
-    // hard way on hardware powering an actual refrigerator. Settled on 50
-    // as a floor that's solidly inside the range already confirmed working
-    // (28-119W tested) while staying well clear of that 1W value.
-    chargeLimitMin: 50,
+    // Not a hardware limit - the least charge worth *starting*. The ~33W
+    // conversion overhead is near enough fixed whatever the rate, so a small
+    // charge is mostly loss: 50W costs 83W to deliver (60% efficient, and
+    // only ~54% once the discharge loss is counted too), where 100W costs
+    // 133W (75%) and 200W costs 233W (86%).
+    //
+    // This used to be pushed as low as the hardware would tolerate, because
+    // back then a device that shouldn't charge still had to be sent *some*
+    // wattage - there was no way to say zero. Passthrough (see AcMode) says
+    // zero properly now, so nothing wants this low any more and the only
+    // remaining pressure is upward, toward charging efficiently.
+    //
+    // What stops it going higher is that it also sets the solar needed
+    // before charging starts at all (minSolarToChargeWatts: this + 33W,
+    // plus household loads and HOUSE_STANDBY_WATTS on top - about 278W of
+    // panel output at 100). Raise it too far and an overcast day never
+    // charges anything. 100 is the compromise until house consumption is
+    // actually measured; surplus that doesn't charge isn't wasted anyway,
+    // it's absorbed by the house at 1:1 rather than stored at 60%.
+    //
+    // (For the record on the hardware itself: the Anker app's own
+    // "交流電池充電" slider stops at 100W, but a live test on 2026-08-24
+    // taking it down to 1W showed sub-100W requests do scale the real charge
+    // current roughly proportionally, so the old "silently clamped to 100W"
+    // note here was wrong - it was the same acInputWatts-includes-
+    // passthrough-load confusion diagnosed that day.)
+    chargeLimitMin: 100,
     chargeLimitMax: 1200,
-    // Below this, we don't ask any device to charge at all (avoids 100W-floor
-    // grid-draw noise from tiny dawn/dusk solar trickle).
     // Constant floor on house consumption (fridge compressor, routers, etc.)
     // that's safe to assume is always drawn regardless of solar - that much
     // of solar output never needs covering by the charger's ceil-rounding
