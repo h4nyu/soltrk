@@ -87,8 +87,10 @@ describe("allocate", () => {
       500,
       LIMITS,
     );
-    assert.equal(result.acOn[SN1], true);
-    assert.equal(result.acOn[SN2], false);
+    assert.equal(result.activeSn, SN1);
+    // SN2 still gets AC - solar can cover its 50W load, so there's no
+    // reason to make it run that off its battery - it just doesn't charge.
+    assert.equal(result.acOn[SN2], true);
   });
 
   test("a sticky incumbent keeps winning against a marginally-better challenger", () => {
@@ -125,9 +127,57 @@ describe("allocate", () => {
       500,
       LIMITS,
     );
-    assert.equal(result.acOn[SN1], true);
-    assert.equal(result.acOn[SN2], false);
+    assert.equal(result.activeSn, SN1);
     assert.equal(result.watts[SN1], 467);
+    // SN2's 200W load is covered by solar rather than by its own battery,
+    // even though it lost the charging slot.
+    assert.equal(result.acOn[SN2], true);
+  });
+
+  test("covers a losing candidate's load from solar instead of its battery", () => {
+    // SN2 loses the charging slot but has a 120W load of its own. Solar can
+    // cover it, so it stays on AC rather than running that load down its
+    // battery only to have to put the energy back later.
+    const result = allocate(
+      [SN1, SN2],
+      { [SN1]: 20, [SN2]: 80 },
+      {},
+      { [SN1]: 0, [SN2]: 120 },
+      500,
+      LIMITS,
+    );
+    assert.equal(result.activeSn, SN1);
+    assert.deepEqual(result.acOn, { [SN1]: true, [SN2]: true });
+  });
+
+  test("leaves a load uncovered rather than buying grid power for it", () => {
+    // Only 150W of solar against a 300W load - covering it would mean
+    // importing the shortfall, which is exactly what the battery is for.
+    const result = allocate([SN1], { [SN1]: 50 }, {}, { [SN1]: 300 }, 150, LIMITS);
+    assert.equal(result.acOn[SN1], false);
+  });
+
+  test("covers the emptiest battery's load first when solar can't cover both", () => {
+    // 200W of solar, two 150W loads - only one fits. SN2 is the more
+    // depleted of the two, so it's the one that stops discharging.
+    const result = allocate(
+      [SN1, SN2],
+      { [SN1]: 70, [SN2]: 15 },
+      {},
+      { [SN1]: 150, [SN2]: 150 },
+      200,
+      LIMITS,
+    );
+    assert.equal(result.acOn[SN2], true);
+    assert.equal(result.acOn[SN1], false);
+  });
+
+  test("doesn't close the plug for a device with no load to cover", () => {
+    // Nothing to pass through, so connecting it would just be needless
+    // switching - it only goes on if it actually wins the charging slot.
+    const result = allocate([SN1, SN2], { [SN1]: 50, [SN2]: 50 }, {}, {}, 500, LIMITS);
+    assert.equal(result.activeSn, SN1);
+    assert.equal(result.acOn[SN2], false);
   });
 
   test("keeps a full device connected for passthrough while solar is sufficient", () => {

@@ -35,6 +35,18 @@ docker compose exec soltrk soltrk status
 
 Full setup (Tuya local keys, Anker credentials, `data/devices.json`, the optional smart-plug AC cutoff) is in README.md's "One-time setup" — read it before touching device onboarding.
 
+## Working on the live system
+
+The real deployment runs on a Raspberry Pi (`yao@pi0.local:~/soltrk/`), not on this machine. `./packages` is bind-mounted into the container, so deploying a code change means `scp`-ing the changed files there and then `docker compose up -d --build soltrk`. Note that `tsconfig.json`, `package.json` and the `Dockerfile` are `COPY`'d at image build time rather than mounted, and `.env` changes need `--force-recreate` (a plain `up -d` can report "Running" as a no-op).
+
+Three standing constraints on that:
+
+- **Ask before deploying.** Restarting the container interrupts a control loop managing real household power. Passing tests is not permission — get an explicit yes each time, and don't carry one deploy's approval over to the next.
+- **Prefer night for anything risky.** Container restarts and exploratory changes lose generation if done mid-afternoon.
+- **Minimize Anker cloud logins.** Every `docker compose run --rm` one-off logs in again from scratch, and too many logins from one IP risks getting it throttled (`account_locked` is already handled in `native-anker-client.ts`). Verify protocol changes with unit tests against the encoded bytes, batch live checks into a single script run, and read the long-running container's logs or `data/state.json` instead of spawning containers when that would answer the question.
+
+Type-checking, tests, reading logs and `data/state.json` over SSH are all ordinary work and need no approval — none of it disturbs the running system.
+
 ## Architecture
 
 Ports-and-adapters monorepo (npm workspaces), same shape as the sibling `picomanager` project:
@@ -48,6 +60,8 @@ A single root `tsconfig.json` (`include: ["packages/*/src"]`) type-checks every 
 **No build step.** `tsc` runs with `noEmit: true` for type-checking only; the container and `npm run dev` both execute TypeScript directly via `tsx` (which uses esbuild's own parser — the installed `typescript` version only affects `tsc --noEmit`, never runtime).
 
 **Charging decision, every poll cycle:** the allocator evaluates every non-full battery as a hypothetical active candidate — `request = solar − (every other unit's measured AC input) − this unit's own measured household load − ~33W conversion overhead` — and whichever feasible candidate leaves the smallest leftover balance wins and becomes the one active charging target this cycle. A candidate's score also gets a virtual watt bonus the lower its SOC is (`SOC_URGENCY_BONUS_WATTS_PER_PERCENT`), so a low-SOC unit can win — even with a nominally infeasible request — ahead of a peer that's already drawing most of the solar; the previous cycle's winner additionally gets a flat sticky bonus so two closely-matched candidates don't flip the active unit every single cycle. None of this is fairness/ordering logic — a unit that never wins is protected by a separate, independent safety net: `GatedBatteryDriver` force-closes a gated battery's smart-plug AC cutoff below a critical SOC floor regardless of what the allocator decided, and holds it closed until a higher recovery SOC (a gap that prevents flapping right at the threshold). That rescue runs the unit in `passthrough`, not `charge` — it stops the drain without buying grid power to refill the battery.
+
+**Solar covers loads before it charges:** each cycle the allocator first hands AC to every unit with a household load of its own, emptiest battery first, while there's solar left to cover that load — only the remainder goes to charging the one winning unit. A unit whose load solar can't cover falls back to its own battery. This is net-neutral on stored energy (the watts the charger gives up are watts the others would have drawn from their batteries) but skips a whole discharge/recharge round trip of conversion loss and cycle wear.
 
 **Three AC states, not two** (`AcMode` in `core/src/battery/battery-driver.ts`): `charge` (plug closed, usage mode `STANDARD`, charges at the requested wattage plus ~33W overhead), `passthrough` (plug closed, usage mode `TIME_OF_USE`, feeds the unit's own load straight from AC with *no* charging and no overhead — measured AC in exactly equals AC out), and `battery` (plug open, unit runs its load off its own battery). Passthrough depends on each unit having an all-day MID_PEAK TOU schedule stored on it, set by hand in the Anker app once — soltrk can only switch the usage mode (`encodeSetUsageMode`), not write the schedule, which is cloud-gated. Units silently fall back to `STANDARD` whenever AC or Wi-Fi drops, so the usage mode is re-sent every cycle rather than cached. See README's "Lossless passthrough via TOU MID_PEAK" for the full derivation and live measurements.
 

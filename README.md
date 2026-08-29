@@ -74,14 +74,21 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   enough on its own (observed: roughly an hour from 0 to peak in the
   morning). Every non-active unit idles at the hardware's minimum request
   (100W - there's no real "0W/off", see below);
-  whether it's actually *connected* to AC is a separate per-unit decision:
-  the active unit and any full (100% SOC) unit stay connected while solar
-  is sufficient - a full unit doesn't charge, but with AC present it passes
-  solar straight through to its own load instead of draining its battery,
-  which avoids both the 99⇄100% plug-flapping a cut-off full unit would
-  cycle through and the double conversion loss of going via the battery -
-  everything else is disconnected (see the smart-plug section under
-  One-time setup).
+  whether it's actually *connected* to AC is a separate per-unit decision.
+  **Solar covers household loads before it charges anything**: every unit
+  with a load of its own stays connected while there's solar left to cover
+  that load, emptiest battery first, so when there isn't enough to go round
+  the units with the least charge to spare are the ones that stop
+  discharging. This costs the charger nothing in net terms - the watts it
+  gives up are watts the other units would otherwise have pulled out of
+  their own batteries - while avoiding a whole discharge/recharge round trip
+  of conversion loss and cycle wear. A unit with no load of its own isn't
+  connected unless it wins the charging slot, since there'd be nothing to
+  pass through. A full (100% SOC) unit stays connected whenever there's any
+  solar, budget or not: it can't charge, and cutting it just makes it
+  discharge to 99% and flap the plug straight back on. Everything else is
+  disconnected and runs off its own battery (see the smart-plug section
+  under One-time setup).
 
 ### Reverse engineering a new command
 

@@ -96,19 +96,27 @@ export type Allocation = {
  * self-correcting without the self-feedback oscillation that made us avoid
  * measured-input control for a device's own request.
  *
- * AC gate (`acOn`): a device is connected to AC when it wins the evaluation
- * above, or when it's full (SOC 100%) while there's any solar at all - a
- * full unit doesn't charge, but with AC present it passes solar through to
- * its own load instead of draining its battery, which both saves a full
- * battery from cycling 99⇄100 all afternoon (plug flapping every few minutes
- * as it self-discharges) and feeds that load from solar. Passthrough isn't
- * held to minToCharge the way a new charge candidate is - it only ever
- * draws what the load actually needs, so even solar too weak to be worth
- * starting a fresh charge session over is still worth passing through.
- * Everything else is disconnected. The critical-SOC rescue in
- * GatedBatteryDriver can override a "false" to keep a near-empty battery
- * alive - that decision needs
- * per-device forced-state and stays there.
+ * AC gate (`acOn`): solar covers household loads before it charges
+ * anything. Every unit with a load of its own is connected while there's
+ * solar left to cover that load - emptiest battery first, so if there
+ * isn't enough to go around, the units with the least charge to spare are
+ * the ones that stop discharging. A full unit is always connected while
+ * there's any solar (it can't charge, and cutting it makes it discharge to
+ * 99% and flap the plug straight back on). Passthrough isn't held to
+ * minToCharge the way a new charge candidate is - it only ever draws what
+ * the load actually needs, so even solar too weak to start a charge with
+ * is worth passing through.
+ *
+ * Covering loads first is not a concession by the charger: the watts it
+ * gives up are watts the other units would otherwise have taken out of
+ * their own batteries, so the net energy stored across the system is the
+ * same either way - minus a full discharge/recharge round trip of
+ * conversion loss and cycle wear that simply doesn't happen.
+ *
+ * Everything else is disconnected and runs off its own battery. The
+ * critical-SOC rescue in GatedBatteryDriver can override that to keep a
+ * near-empty battery alive - that decision needs per-device forced state
+ * and stays there.
  *
  * Every device's requested wattage is at least `limits.min` - the lowest
  * request the hardware accepts (below-minimum requests get clamped up by
@@ -145,13 +153,40 @@ export function allocate(
 
   const netWatts = Math.max(0, availableWatts - limits.houseStandbyWatts);
 
-  // Full devices pass whatever solar there is straight through to their own
-  // load - unlike starting a new charge (which has a real minimum draw, see
-  // minToCharge below), passthrough only ever draws exactly what the load
-  // needs, so there's no minimum solar required for it to be worthwhile.
+  // Solar covers household loads before it charges anything. A unit whose
+  // own load is fed from AC isn't draining its battery to run it, and isn't
+  // paying to store that energy and retrieve it again later - so covering
+  // loads first and charging with the remainder stores the same net watts
+  // as charging hard while the others discharge, minus a whole round trip
+  // of conversion losses and cycle wear. Unlike starting a charge (which
+  // has a real minimum draw, see minToCharge), passthrough only ever draws
+  // exactly what the load needs, so there's no minimum solar for it to be
+  // worth doing.
+  let loadBudget = netWatts;
   if (netWatts > 0) {
+    // A full unit stays on whatever the budget says: it can't charge, so
+    // AC costs nothing beyond its own load, and cutting it makes it
+    // discharge to 99% and flap the plug back on moments later.
     for (const sn of sns) {
-      if (socBySn[sn] === 100) acOn[sn] = true;
+      if (socBySn[sn] === 100) {
+        acOn[sn] = true;
+        loadBudget -= acOutputWattsBySn[sn] ?? 0;
+      }
+    }
+    // Then whatever solar is left covers the rest, emptiest battery first,
+    // so when there isn't enough to go around the units with the least
+    // charge to spare are the ones that stop discharging. A unit with no
+    // load of its own is skipped - there's nothing to cover, and closing
+    // its plug would only add needless switching.
+    const byEmptiest = sns
+      .filter((sn) => socBySn[sn] !== undefined && socBySn[sn] !== 100)
+      .sort((a, b) => (socBySn[a] as number) - (socBySn[b] as number));
+    for (const sn of byEmptiest) {
+      const load = acOutputWattsBySn[sn] ?? 0;
+      if (load > 0 && load <= loadBudget) {
+        acOn[sn] = true;
+        loadBudget -= load;
+      }
     }
   }
 
