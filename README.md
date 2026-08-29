@@ -613,9 +613,12 @@ day against 2.5. Nearly all of the recoverable energy sits between 20% and
 the whole buffer for. Deeper cycling also costs battery life, which pushes
 the other way and is harder to price.
 
-The margin is insurance against soltrk itself failing to act, not against
-anything currently going wrong - the gate has closed correctly on all 32
-arrivals. Note also that the app's 6% isn't a sharp wall: 事務室 has been
+**Backup reserve is explicitly not a goal here** - this deployment is
+optimised for electricity cost, so the floor is sized only by what keeps
+the load powered while the loop is working, never by how many hours of
+outage runtime it would leave. The margin is insurance against soltrk
+itself failing to act, not against anything currently going wrong - the
+gate has closed correctly on all 32 arrivals. Note also that the app's 6% isn't a sharp wall: 事務室 has been
 seen reading 5%, and units sit at 6-7% still delivering 50-110W for several
 minutes before AC returns. What has never been observed is a unit left at
 6% on its battery long enough to actually stop, because the gate has always
