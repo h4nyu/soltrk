@@ -271,6 +271,19 @@ unit the allocator already picked to charge.
   - that much of solar is treated as already spoken for and doesn't need
   covering by the charger. Leave at `0` (default) if unsure; setting it too
   high is what could actually cause backfeed.
+- **A plug can be switched by something other than soltrk.** The Tuya Smart
+  Life app keeps its own automations and scenes, and any left over from
+  before a plug was wired into soltrk will keep firing - turning the plug on
+  independently of the control loop, with nothing in soltrk's logs, because
+  soltrk never issued the command. Observed live: a gated unit drew AC for
+  hours while the loop believed its plug was open, and it recurred until the
+  stray rule was deleted in the app.
+
+  This looks similar to the LAN flakiness below, so check the app's
+  Automation/Scene tab for rules involving the plug before spending time on
+  the flaky-command explanation. It can't be fixed from soltrk - the rule
+  lives on Tuya's cloud side.
+
 - **The requested wattage is a rough dial, not a precise one.** Real
   hardware doesn't reliably obey a specific requested wattage - a 100W
   request was observed drawing 137W on real hardware. `soltrk` treats the
