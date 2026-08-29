@@ -114,11 +114,57 @@ export function encodeSetChargeLimit(watts: number, now = Date.now()): Buffer {
 
 /**
  * TOU period type, as seen in the `a7` field of a captured
- * msgtype 0x0090 message - confirmed for PEAK (1) and OFF_PEAK (3) by
- * diffing two live captures that differed only in this byte; MID_PEAK (2)
- * is inferred from ordering (untested).
+ * msgtype 0x0090 message - originally confirmed for PEAK (1) and OFF_PEAK (3)
+ * by diffing two live captures that differed only in this byte, with
+ * MID_PEAK (2) inferred from ordering. The upstream `anker-solix-api`
+ * project has since documented the same field as
+ * `(tariff(1=Peak, 2=Mid, 3=Off), start_hr, end_hr)`, independently
+ * confirming the inferred MID_PEAK value.
  */
 export const TouPeriodType = { PEAK: 1, MID_PEAK: 2, OFF_PEAK: 3 } as const;
+
+/**
+ * Usage mode, the `a2` field of a msgtype 0x0090 message. Values from the
+ * upstream `anker-solix-api` project's command map, which lists
+ * `pps_usage_mode` as a *field-a2-only* command on this same message type -
+ * separate from the full `pps_tou_schedule` command (fields a2, a3, a4, a6,
+ * a7) that upstream marks "CLOUD CMD!!!" and still leaves disabled. Our own
+ * captured all-day schedule messages carry `a2 = 1` (TIME_OF_USE), matching.
+ *
+ * STANDARD is the plain UPS behaviour (charging governed by
+ * `encodeSetChargeLimit`); TIME_OF_USE makes the device follow whatever TOU
+ * schedule is already stored on it.
+ */
+export const PpsUsageMode = {
+  STANDARD: 0,
+  TIME_OF_USE: 1,
+  SELF_CONSUMPTION: 2,
+  CUSTOM: 3,
+} as const;
+
+/**
+ * msgtype 0x0090 carrying *only* the `a2` usage-mode field - switches the
+ * device between plain UPS behaviour (`STANDARD`) and following its stored
+ * TOU schedule (`TIME_OF_USE`), without touching the schedule itself.
+ *
+ * This is the half of msgtype 0x0090 that actually works over MQTT.
+ * `encodeSetTouSchedule` below sends the full field set including `a7` (the
+ * schedule), which the device ignores from us because that write really
+ * happens through a cloud HTTP endpoint - but upstream's command map lists
+ * the usage mode as its own field-a2-only command on this same message type,
+ * not marked cloud-only, and enables it for this device model. So a schedule
+ * set once by hand in the Anker app (e.g. an all-day MID_PEAK period, which
+ * makes the unit pass AC straight through to its load without charging and
+ * therefore without paying the ~33W conversion overhead) can be switched in
+ * and out of effect from here.
+ */
+export function encodeSetUsageMode(mode: number, now = Date.now()): Buffer {
+  const a2 = Buffer.from([0xa2, 0x02, 0x01, mode]);
+  const tsValue = Buffer.alloc(4);
+  tsValue.writeUInt32LE(Math.floor(now / 1000), 0);
+  const fe = Buffer.concat([Buffer.from([0xfe, 0x05, 0x03]), tsValue]);
+  return buildMessage([0x00, 0x90], [FIXED_MARKER, a2, fe]);
+}
 
 /**
  * msgtype 0x0090 - sets the TOU (Time of Use) schedule to a single period

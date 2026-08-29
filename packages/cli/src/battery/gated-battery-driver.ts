@@ -20,20 +20,25 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * can wrap every Anker device and only the ones with a
  * TUYA_PLUG_*_GATES_SN entry actually get gated.
  *
- * The plug follows the allocator's `acOn` decision (active charging target,
- * or full-with-solar passthrough - see @soltrk/core/control/allocator.ts).
- * When `acOn` isn't provided (a caller not using the allocator), it falls
- * back to inferring from the wattage: on only when more than `offWatts`
- * (the allocator's `chargeLimitMin`, what deprioritized devices are sent)
- * was requested.
+ * The plug follows the allocator's `mode` decision (see
+ * @soltrk/core/control/allocator.ts and AcMode): closed for `charge` and
+ * `passthrough`, open for `battery`. When `mode` isn't provided (a caller
+ * not using the allocator), it falls back to inferring from the wattage: on
+ * only when more than `offWatts` (the allocator's `chargeLimitMin`, what
+ * deprioritized devices are sent) was requested.
  *
  * Safety override: unlike a plain "anker" device, a gated one can be cut off
  * from AC entirely (no solar, deprioritized) with nothing to stop its own
  * battery draining down to zero powering whatever it's plugged into (e.g.
  * an actual refrigerator) - so at/below `criticalSocPercent`, the gate opens
- * and charges at whatever wattage was requested (normally `offWatts`, i.e.
- * the hardware's own minimum) regardless of solar availability or the
- * allocator's own balance evaluation.
+ * regardless of solar availability or the allocator's own balance
+ * evaluation. The rescue runs the device in `passthrough`, not `charge`:
+ * the point is to stop the battery draining, and passthrough does that by
+ * feeding the device's load from AC directly - without buying grid power to
+ * push into the battery, and without paying the ~33W conversion overhead to
+ * do it. A rescued battery therefore holds its SOC steady rather than
+ * climbing; actually refilling it is left to the allocator picking it as a
+ * charge target once there's solar to do it with.
  * It stays forced open until SOC recovers to `recoverySocPercent` (a higher
  * threshold, not the same one) rather than immediately releasing at
  * `criticalSocPercent` again - without that gap, a SOC hovering right at the
@@ -66,9 +71,9 @@ export const GatedBatteryDriver = (props: {
 
   const getStatus: BatteryDriver["getStatus"] = (sn) => inner.getStatus(sn);
 
-  const setChargeLimit: BatteryDriver["setChargeLimit"] = async (sn, watts, acOn) => {
+  const setChargeLimit: BatteryDriver["setChargeLimit"] = async (sn, watts, mode) => {
     const plug = plugsBySn.get(sn);
-    if (!plug) return inner.setChargeLimit(sn, watts);
+    if (!plug) return inner.setChargeLimit(sn, watts, mode);
 
     const status = await inner.getStatus(sn);
     const soc = Result.isErr(status) ? undefined : status.batterySoc;
@@ -81,18 +86,28 @@ export const GatedBatteryDriver = (props: {
     const critical = forcedSns.has(sn);
     if (critical) {
       console.warn(
-        `[gated:${sn}] SOC ${soc}% forcing AC on regardless of solar/allocator (releases at ${recoverySocPercent}%)`,
+        `[gated:${sn}] SOC ${soc}% forcing AC on in passthrough regardless of solar/allocator (releases at ${recoverySocPercent}%)`,
       );
     }
 
-    const gateOn = critical || (acOn ?? watts > offWatts);
+    // A rescue only ever *adds* AC in passthrough - it never downgrades a
+    // device the allocator already chose to charge, since charging keeps the
+    // battery filling rather than merely holding.
+    const effectiveMode =
+      critical && mode !== "charge" ? "passthrough" : (mode ?? (watts > offWatts ? "charge" : "battery"));
+
+    const gateOn = effectiveMode !== "battery";
     if (lastGateBySn.get(sn) !== gateOn) {
       const gateResult = await plug.setOn(gateOn);
       if (Result.isErr(gateResult)) return gateResult;
       lastGateBySn.set(sn, gateOn);
     }
-    if (!gateOn) return undefined;
-    return inner.setChargeLimit(sn, watts);
+    if (!gateOn) return "battery";
+    const result = await inner.setChargeLimit(sn, watts, effectiveMode);
+    // Report the mode this driver decided on, not whatever the inner adapter
+    // makes of it - the rescue override above is this layer's call, and it's
+    // what the plug was actually switched to.
+    return Result.isErr(result) ? result : effectiveMode;
   };
 
   return { getStatus, setChargeLimit };

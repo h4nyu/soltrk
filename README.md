@@ -109,9 +109,22 @@ other captured command - the real write happens through a cloud HTTP
 endpoint the app calls, and the cloud relays this MQTT message as a
 downstream *notification* afterward, not as the authoritative write itself.
 Replaying only the MQTT side isn't enough for commands like this; that
-endpoint hasn't been found (checked the `anker-solix-api` project's
-Solarbank-2-equivalent, `schedule.py`'s `set_sb2_use_time` - different
-device class, and explicitly marked unimplemented there too).
+endpoint has never been found.
+
+The lesson learned working around that, though, is worth repeating when a
+command seems cloud-only: **a captured message is not necessarily one
+command.** Msgtype `0x0090` turned out to carry three separate commands
+distinguished only by which TLV fields are present, and while the schedule
+write among them really is cloud-gated, the usage mode sharing the same
+message type is not - sending a deliberately *smaller* subset of the
+captured message's fields (`encodeSetUsageMode`, field `a2` only) works over
+plain MQTT and was enough to get the behaviour we actually wanted. Before
+concluding a message type is unusable, check whether some subset of its
+fields is a command in its own right; cross-checking against
+[`anker-solix-api`](https://github.com/thomluther/anker-solix-api)'s
+`mqttmap.py` / `mqttcmdmap.py` (which model exactly this
+one-message-type-many-commands structure, and mark the cloud-only ones) is
+the fastest way to find out.
 
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, minimizing backfeed rather than a certified zero-export
@@ -128,6 +141,73 @@ wattage is computed. At this deployment's scale (two GTB-800 panels, ~660W
 combined peak) any such backfeed is expected to be small and brief - this
 is a deliberate trade-off against needless grid draw, not an oversight, but
 skip the disclaimers only if you understand it.
+
+### Lossless passthrough via TOU MID_PEAK
+
+Each unit has three distinct AC states, not two (`AcMode` in
+`packages/core/src/battery/battery-driver.ts`):
+
+| state | smart plug | usage mode | effect |
+| --- | --- | --- | --- |
+| `charge` | closed | `STANDARD` | charges at the requested wattage, +~33W overhead |
+| `passthrough` | closed | `TIME_OF_USE` | feeds its own load from AC, **no charging, no overhead** |
+| `battery` | open | (n/a) | runs its own load off its battery |
+
+`passthrough` exists because charging is not free: measured on real
+hardware, `AC in - AC out - requested watts` is consistently ~25-33W, which
+is where `CHARGE_CONVERSION_OVERHEAD_WATTS` comes from. A unit that shouldn't
+charge right now, but also shouldn't drain its battery powering a fridge,
+wants neither `charge` nor `battery`.
+
+**Setup (manual, once per unit).** In the Anker app, set the unit's TOU
+schedule to a single all-day **MID_PEAK** period (00:00-24:00). All three
+units in this deployment are configured this way and left that way. This is
+the one step soltrk can't do itself - see below.
+
+**How soltrk drives it.** With that schedule stored on the device, the
+usage mode alone selects the behaviour, and *that* is settable over plain
+MQTT (`encodeSetUsageMode`, msgtype 0x0090 carrying only field `a2`):
+`TIME_OF_USE` follows the stored MID_PEAK schedule and charges nothing,
+`STANDARD` makes `setChargeLimit` effective again. Verified live on one
+unit, switching cleanly in both directions:
+
+```
+stored MID_PEAK :  in  90W / out 90W  -> difference   0W   (passthrough)
+sent STANDARD   :  in 162W / out 96W  -> difference +65W   (charging resumed)
+sent TIME_OF_USE:  in  90W / out 90W  -> difference   0W   (back to passthrough)
+```
+
+**Why only field `a2` works.** Msgtype 0x0090 is a group of three commands
+sharing one message, distinguished by which fields are present. Field `a2`
+alone is the usage mode and goes over MQTT normally. Fields `a2`+`a3`+`a4`+
+`a6`+`a7` together are the *schedule* write, and `a7` (the schedule itself,
+encoded `(tariff(1=Peak, 2=Mid, 3=Off), start_hr, end_hr)` per slot) only
+takes effect through an Anker cloud HTTP endpoint that has never been
+identified - the app calls that endpoint, and the MQTT message we can see is
+just the cloud relaying it downstream afterward. That's why
+`encodeSetTouSchedule` in `protocol.ts` is decoded and byte-exact against
+real captures yet does nothing when we publish it, while `encodeSetUsageMode`
+works: the former includes `a7`, the latter deliberately doesn't. The
+upstream [`anker-solix-api`](https://github.com/thomluther/anker-solix-api)
+project's command map reaches the same conclusion independently, annotating
+its `pps_tou_schedule` as a cloud command and leaving it disabled, while
+enabling `pps_usage_mode` for this model.
+
+**The mode is not sticky.** A unit drops out of `TIME_OF_USE` back to
+`STANDARD` by itself whenever it loses grid power or Wi-Fi - the app says so
+explicitly ("TOUモードを終了しました … 電力モードは[標準モード]に切り替わり
+ました"). Since a gated unit loses grid power every time its plug opens, the
+usage mode is re-sent every cycle rather than cached, exactly like the
+wattage command.
+
+**Consequence for the critical-SOC rescue.** The rescue in
+`GatedBatteryDriver` uses `passthrough`, not `charge`: its job is to stop a
+battery draining, and passthrough does that by powering the device's load
+from AC directly - without buying grid power to push into a battery, and
+without paying the conversion overhead to do it. A rescued unit therefore
+holds its SOC steady rather than climbing; refilling it is left to the
+allocator once there's solar to do it with. A rescue never downgrades a unit
+the allocator already picked to charge.
 
 ## Known caveats
 
@@ -156,16 +236,8 @@ skip the disclaimers only if you understand it.
   and this was seen with the unit already in **標準モード (Standard mode)**,
   not just under a TOU (Time of Use) "オフピーク" schedule as originally
   suspected - so this isn't a TOU-specific quirk, it's a general limit of
-  the wattage command itself, in any mode. Dynamic TOU control from soltrk
-  was also explored and abandoned: the schedule-change command was reverse
-  engineered (`encodeSetTouSchedule` in `protocol.ts`) but replaying it
-  directly over MQTT doesn't take effect, because the real write goes
-  through an unidentified Anker cloud HTTP endpoint, not the MQTT message
-  alone (see "Reverse engineering a new command" below). Since neither the
-  wattage command nor TOU can be driven reliably from software in any mode,
-  the practical fix is the physical smart-plug AC cutoff described in
-  "One-time setup" step 6, which sidesteps this entirely - all 3 of this
-  deployment's units are gated this way and run in 標準モード.
+  the wattage command itself, in any mode. What *does* stop charging outright
+  is the usage mode, see "Lossless passthrough via TOU MID_PEAK" below.
 - **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
   Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
   no upstream reference for this model's wire format at all, read or write,

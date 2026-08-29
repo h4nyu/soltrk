@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { BatteryDriver, BatteryStatus, Result } from "@soltrk/core";
+import { AcMode, BatteryDriver, BatteryStatus, Result } from "@soltrk/core";
 import { GatedBatteryDriver, PowerGate } from "./gated-battery-driver";
 
 const GATED_SN = "gated-sn";
@@ -9,15 +9,17 @@ const OFF_WATTS = 100;
 const CRITICAL_SOC_PERCENT = 6;
 const RECOVERY_SOC_PERCENT = 20;
 
-function fakeInner(batterySoc?: number): BatteryDriver & { calls: { sn: string; watts: number }[] } {
+type InnerCall = { sn: string; watts: number; mode: AcMode | undefined };
+
+function fakeInner(batterySoc?: number): BatteryDriver & { calls: InnerCall[] } {
   return {
     calls: [],
     async getStatus(): Promise<Result<BatteryStatus>> {
       return batterySoc === undefined ? new Error("no status") : { batterySoc };
     },
-    async setChargeLimit(sn: string, watts: number): Promise<Result<void>> {
-      this.calls.push({ sn, watts });
-      return undefined;
+    async setChargeLimit(sn: string, watts: number, mode?: AcMode): Promise<Result<AcMode>> {
+      this.calls.push({ sn, watts, mode });
+      return mode ?? "charge";
     },
   };
 }
@@ -30,8 +32,8 @@ function fakeInnerWithMutableSoc(): BatteryDriver & { soc: number | undefined } 
     async getStatus(): Promise<Result<BatteryStatus>> {
       return state.soc === undefined ? new Error("no status") : { batterySoc: state.soc };
     },
-    async setChargeLimit(): Promise<Result<void>> {
-      return undefined;
+    async setChargeLimit(): Promise<Result<AcMode>> {
+      return "charge";
     },
   };
   return state;
@@ -64,28 +66,36 @@ describe("GatedBatteryDriver", () => {
   test("passes through unchanged for an sn with no configured plug", async () => {
     const inner = fakeInner();
 
-    const result = await driver(inner, new Map()).setChargeLimit(OTHER_SN, 500);
+    const result = await driver(inner, new Map()).setChargeLimit(OTHER_SN, 500, "charge");
 
     assert.ok(Result.isOk(result));
-    assert.deepEqual(inner.calls, [{ sn: OTHER_SN, watts: 500 }]);
+    assert.deepEqual(inner.calls, [{ sn: OTHER_SN, watts: 500, mode: "charge" }]);
   });
 
-  test("follows an explicit acOn=true even at idle wattage (full-battery passthrough)", async () => {
+  test("closes the plug for passthrough even at idle wattage, and forwards the mode", async () => {
     const inner = fakeInner(100);
     const gate = fakeGate();
 
-    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS, true);
+    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(
+      GATED_SN,
+      OFF_WATTS,
+      "passthrough",
+    );
 
     assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [true]);
-    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS }]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS, mode: "passthrough" }]);
   });
 
-  test("follows an explicit acOn=false even at a high wattage", async () => {
+  test("follows an explicit battery mode even at a high wattage", async () => {
     const inner = fakeInner(50);
     const gate = fakeGate();
 
-    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, 500, false);
+    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(
+      GATED_SN,
+      500,
+      "battery",
+    );
 
     assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [false]);
@@ -111,7 +121,7 @@ describe("GatedBatteryDriver", () => {
 
     assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [true]);
-    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: 300 }]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: 300, mode: "charge" }]);
   });
 
   test("fails without touching the inner driver when the plug command fails", async () => {
@@ -124,15 +134,53 @@ describe("GatedBatteryDriver", () => {
     assert.deepEqual(inner.calls, []);
   });
 
-  test("forces the gate on and charges at the requested (minimum) wattage when SOC is at the critical floor", async () => {
+  test("rescues a critically low battery into passthrough, not into charging", async () => {
+    // The rescue exists to stop the battery draining, which passthrough does
+    // by feeding the device's own load from AC - without buying grid power
+    // to push into the battery, or paying the conversion overhead to do it.
     const inner = fakeInner(CRITICAL_SOC_PERCENT);
     const gate = fakeGate();
 
-    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS);
+    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(
+      GATED_SN,
+      OFF_WATTS,
+      "battery",
+    );
 
     assert.ok(Result.isOk(result));
     assert.deepEqual(gate.calls, [true]);
-    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS }]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS, mode: "passthrough" }]);
+    // Reported back so the caller logs/records what the rescue actually did,
+    // rather than the "battery" it asked for.
+    assert.equal(result, "passthrough");
+  });
+
+  test("reports back the mode that was applied, including an unrescued one", async () => {
+    const inner = fakeInner(50);
+    const gate = fakeGate();
+    const d = driver(inner, new Map([[GATED_SN, gate]]));
+
+    assert.equal(await d.setChargeLimit(GATED_SN, 300, "charge"), "charge");
+    assert.equal(await d.setChargeLimit(GATED_SN, OFF_WATTS, "passthrough"), "passthrough");
+    assert.equal(await d.setChargeLimit(GATED_SN, OFF_WATTS, "battery"), "battery");
+  });
+
+  test("a rescue never downgrades a device the allocator already chose to charge", async () => {
+    // Charging is strictly better than passthrough for a critically low
+    // battery - it refills rather than merely holding - so a rescue must not
+    // take that away just because the SOC is also below the floor.
+    const inner = fakeInner(CRITICAL_SOC_PERCENT);
+    const gate = fakeGate();
+
+    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(
+      GATED_SN,
+      400,
+      "charge",
+    );
+
+    assert.ok(Result.isOk(result));
+    assert.deepEqual(gate.calls, [true]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: 400, mode: "charge" }]);
   });
 
   test("does not force the gate on above the critical SOC floor", async () => {
@@ -206,8 +254,8 @@ describe("GatedBatteryDriver", () => {
     assert.deepEqual(gate.calls, [true]);
     // The wattage command itself still goes out every cycle the gate is on.
     assert.deepEqual(inner.calls, [
-      { sn: GATED_SN, watts: 300 },
-      { sn: GATED_SN, watts: 350 },
+      { sn: GATED_SN, watts: 300, mode: "charge" },
+      { sn: GATED_SN, watts: 350, mode: "charge" },
     ]);
   });
 
