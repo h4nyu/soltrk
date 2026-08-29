@@ -549,11 +549,29 @@ soon as it's back above the floor.
 being wrong aren't symmetric: treating a full battery as empty costs one
 cycle of passthrough, which holds SOC level and buys only the device's own
 load off the grid, while treating an empty one as fine leaves the cutoff
-open and keeps discharging it with no reading left to stop it. This isn't
-hypothetical - the first cycle after any container restart has no Anker
-status yet, and the earlier "defer to the allocator" behaviour was observed
-putting all three units back on their batteries at 6-10% SOC before the next
-cycle recovered.
+open and keeps discharging it with no reading left to stop it.
+
+This matters more than it sounds, because status reads fail *often* - not
+only on the first cycle after a restart, but roughly every 20 minutes in
+normal running (8 times in a 2.5h window on 2026-08-29, per device). Under
+the earlier "defer to the allocator" behaviour each of those cycles handed
+the device back to its battery and physically opened its plug. Measured on
+a day with no solar and all three units already at the floor, 冷蔵庫 fell
+from 18% to 6% over 2.5 hours - about 51Wh/h - while nominally "held" in
+passthrough. After the change the same device sat at exactly 6% for 45
+consecutive cycles while drawing 74W, AC in equal to AC out. That is also
+the cleanest confirmation so far that passthrough really is level: the
+earlier drift was the plug being opened, not a leak in passthrough.
+
+**The units have a floor of their own**, set by hand in the Anker app (6%
+here), and it is a hard stop - at it the device stops supplying its load
+from the battery, so with the plug open at that moment the load simply
+loses power, which is the exact failure the discharge floor exists to
+prevent. `GATED_DISCHARGE_FLOOR_SOC_PERCENT` has to stay clear of it. The
+10% here leaves 4 points, roughly 42Wh, which against 冷蔵庫's 74W is only
+about half an hour of margin should the protection ever fail to engage.
+The app's figure isn't an exact wall either - 事務室 has been seen reading
+5%.
 
 There's deliberately no second, higher threshold to release at: the
 condition is just "is it above the floor", evaluated fresh from the current
