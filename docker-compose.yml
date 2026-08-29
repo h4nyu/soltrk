@@ -15,7 +15,7 @@ x-env: &env
   # must never fully drain a battery powering something that can't lose power
   # (e.g. an actual refrigerator). This doesn't charge it - passthrough holds
   # SOC level - it only stops the drain.
-  GATED_DISCHARGE_FLOOR_SOC_PERCENT: &GATED_DISCHARGE_FLOOR_SOC_PERCENT ${GATED_DISCHARGE_FLOOR_SOC_PERCENT:-10}
+  GATED_DISCHARGE_FLOOR_SOC_PERCENT: &GATED_DISCHARGE_FLOOR_SOC_PERCENT ${GATED_DISCHARGE_FLOOR_SOC_PERCENT:-6}
 
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path

@@ -548,7 +548,7 @@ plug entry is unaffected and behaves exactly like plain `"anker"`.
 time (no solar, not this cycle's pick) with nothing else stopping its own
 battery from draining down to zero while it keeps powering whatever it's
 actually plugged into (e.g. a real refrigerator). Below
-`GATED_DISCHARGE_FLOOR_SOC_PERCENT` (default 10%), `GatedBatteryDriver`
+`GATED_DISCHARGE_FLOOR_SOC_PERCENT` (default 6%), `GatedBatteryDriver`
 stops letting it run on its battery: `battery` becomes `passthrough`, so
 the plug closes and its load is fed from AC instead.
 
@@ -603,22 +603,25 @@ loads of 46-110W. So at 冷蔵庫's typical 78W:
 | 20% | 73 min |
 | 30% | 126 min |
 
-**But margin isn't free, and 10% is the setting here.** Everything between
-the floor and 6% is capacity that never gets used: the device stops
-discharging at the floor and takes its load off AC instead, so raising the
-floor strands that energy and buys the equivalent from the grid. Across
-three units that is roughly 82Wh at 10%, and 285Wh at 20% - about 9 yen a
-day against 2.5. Nearly all of the recoverable energy sits between 20% and
-10%; going below 10% recovers only another 41Wh, which is not worth trading
-the whole buffer for. Deeper cycling also costs battery life, which pushes
-the other way and is harder to price.
+**But margin isn't free, and the setting here is 6% - no margin at all.**
+Everything between the floor and the device's own cutoff is capacity that
+never gets used: the unit stops discharging at the floor and takes its load
+off AC instead, so every point above 6% is energy bought from the grid
+rather than taken from a battery that already holds it. Across three units
+that is roughly 82Wh at 10% and 285Wh at 20%, about 2.5 and 9 yen a day.
 
 **Backup reserve is explicitly not a goal here** - this deployment is
 optimised for electricity cost, so the floor is sized only by what keeps
 the load powered while the loop is working, never by how many hours of
-outage runtime it would leave. The margin is insurance against soltrk
-itself failing to act, not against anything currently going wrong - the
-gate has closed correctly on all 32 arrivals. Note also that the app's 6% isn't a sharp wall: 事務室 has been
+outage runtime it would leave. That is what settles it, because margin buys
+nothing else: a *total* soltrk failure ends with the plug open and the
+battery flat whatever the floor is, so the only thing a higher floor covers
+is a **transient** stall - about 21 minutes' worth at 10%. Against that,
+running at 6% is what the recorded window actually did, through 32 arrivals
+at the bottom with the load never once interrupted. The residual risk is
+real and worth stating plainly: at 6% soltrk's trigger point and the
+hardware's stopping point are the same number, so a loop that is late by
+even a cycle has nothing held back behind it. Note also that the app's 6% isn't a sharp wall: 事務室 has been
 seen reading 5%, and units sit at 6-7% still delivering 50-110W for several
 minutes before AC returns. What has never been observed is a unit left at
 6% on its battery long enough to actually stop, because the gate has always

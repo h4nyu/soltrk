@@ -69,16 +69,18 @@ export function loadConfig() {
     // lose power (e.g. an actual refrigerator). This doesn't charge it -
     // passthrough holds SOC level - it only stops the drain.
     //
-    // The value trades margin against stranded capacity. Margin is the gap
-    // to the device's own 6% cutoff (set in the Anker app) if this ever
-    // fails to engage - measured from the recorded descents, not divided out
-    // of the nameplate, which overstates it by half: a SOC point is worth
-    // about 6.8Wh down here, not 10.56. Stranded capacity is everything
-    // between the floor and 6%, which is bought from the grid instead. 10
-    // keeps about 21 minutes of margin while giving up only ~82Wh across the
-    // three units; 20 would nearly quadruple the margin but strand 285Wh.
-    // See README.
-    gatedDischargeFloorSocPercent: Number(process.env.GATED_DISCHARGE_FLOOR_SOC_PERCENT ?? 10),
+    // Set to the devices' own cutoff (6%, configured in the Anker app), so
+    // nothing is stranded above it. Anything higher is capacity the loop
+    // refuses to use and buys from the grid instead - ~82Wh across three
+    // units at 10%, ~285Wh at 20% - in exchange for margin should this
+    // protection fail to engage in time. Since backup reserve isn't a goal
+    // here (see README) that trade isn't worth taking: it buys nothing but
+    // outage runtime, and a total soltrk failure ends with the plug open
+    // and the battery flat whatever the floor is. What's given up is the
+    // ~21 minutes at 10% that would cover a *transient* stall. Running at 6
+    // is what the recorded window did, across 32 arrivals at the bottom
+    // without the load ever being interrupted.
+    gatedDischargeFloorSocPercent: Number(process.env.GATED_DISCHARGE_FLOOR_SOC_PERCENT ?? 6),
     stateFilePath: STATE_FILE_PATH,
   };
 }
