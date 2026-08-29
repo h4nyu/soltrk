@@ -399,7 +399,7 @@ plug entry is unaffected and behaves exactly like plain `"anker"`.
 time (no solar, not this cycle's pick) with nothing else stopping its own
 battery from draining down to zero while it keeps powering whatever it's
 actually plugged into (e.g. a real refrigerator). Below
-`GATED_DISCHARGE_FLOOR_SOC_PERCENT` (default 30%), `GatedBatteryDriver`
+`GATED_DISCHARGE_FLOOR_SOC_PERCENT` (default 10%), `GatedBatteryDriver`
 stops letting it run on its battery: `battery` becomes `passthrough`, so
 the plug closes and its load is fed from AC instead.
 
