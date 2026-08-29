@@ -75,11 +75,11 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   morning). Every non-active unit idles at the hardware's minimum request
   (100W - there's no real "0W/off", see below);
   whether it's actually *connected* to AC is a separate per-unit decision.
-  **Solar covers household loads before it charges anything**: every unit
-  with a load of its own stays connected while there's solar left to cover
-  that load, emptiest battery first, so when there isn't enough to go round
-  the units with the least charge to spare are the ones that stop
-  discharging. This costs the charger nothing in net terms - the watts it
+  **Solar covers household loads before it charges anything**: while there's
+  any solar, units stay connected emptiest battery first for as long as the
+  budget lasts, so when there isn't enough to go round the units with the
+  least charge to spare are the last to be left on their own batteries - and
+  a full one is the first, having the most to spare. This costs the charger nothing in net terms - the watts it
   gives up are watts the other units would otherwise have pulled out of
   their own batteries - while avoiding a whole discharge/recharge round trip
   of conversion loss and cycle wear. Taken to its conclusion, **charging

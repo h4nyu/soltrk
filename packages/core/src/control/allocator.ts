@@ -97,15 +97,13 @@ export type Allocation = {
  * measured-input control for a device's own request.
  *
  * AC gate (`acOn`): solar covers household loads before it charges
- * anything. Every unit with a load of its own is connected while there's
- * solar left to cover that load - emptiest battery first, so if there
- * isn't enough to go around, the units with the least charge to spare are
- * the ones that stop discharging. A full unit is always connected while
- * there's any solar (it can't charge, and cutting it makes it discharge to
- * 99% and flap the plug straight back on). Passthrough isn't held to
- * minToCharge the way a new charge candidate is - it only ever draws what
- * the load actually needs, so even solar too weak to start a charge with
- * is worth passing through.
+ * anything. While there's any solar at all, units are connected emptiest
+ * battery first for as long as the budget lasts - so if there isn't enough
+ * to go around, the ones with the least charge to spare are the last to be
+ * left on their own batteries, and a full unit is the first. Passthrough
+ * isn't held to minToCharge the way a new charge candidate is: it only ever
+ * draws what the load actually needs, so even solar too weak to start a
+ * charge with is worth passing through.
  *
  * Covering loads first is not a concession by the charger: the watts it
  * gives up are watts the other units would otherwise have taken out of
@@ -174,37 +172,28 @@ export function allocate(
   // worth doing.
   let loadBudget = netWatts;
   if (netWatts > 0) {
-    // A full unit stays on whatever the budget says: it can't charge, so
-    // AC costs nothing beyond its own load, and cutting it makes it
-    // discharge to 99% and flap the plug back on moments later.
-    for (const sn of sns) {
-      if (socBySn[sn] === 100) {
-        acOn[sn] = true;
-        loadBudget -= acOutputWattsBySn[sn] ?? 0;
-      }
-    }
-    // Then whatever solar is left covers the rest, emptiest battery first,
-    // so when there isn't enough to go around the units with the least
-    // charge to spare are the ones that stop discharging. A unit with no
-    // load of its own is skipped - there's nothing to cover, and closing
-    // its plug would only add needless switching.
+    // Emptiest battery first, so when there isn't enough solar to go around,
+    // the units with the least charge to spare are the ones that stop
+    // discharging - and a full unit, having the most, is first to be left on
+    // its own battery. A unit measuring no load right now is connected too:
+    // it draws nothing and costs no budget, and its load is only zero until
+    // someone switches something on, which a unit already on AC covers from
+    // the first watt instead of discharging until the next poll notices.
     const byEmptiest = sns
-      .filter((sn) => socBySn[sn] !== undefined && socBySn[sn] !== 100)
+      .filter((sn) => socBySn[sn] !== undefined)
       .sort((a, b) => (socBySn[a] as number) - (socBySn[b] as number));
     for (const sn of byEmptiest) {
       const load = acOutputWattsBySn[sn] ?? 0;
-      if (load <= 0) continue;
       // A load bigger than what's left is still worth connecting when the
-      // leftover was large enough to have started a charge instead. Doing so
+      // leftover was large enough to have started a charge instead: doing so
       // imports the shortfall, but the alternative is charging with that
       // surplus while this unit discharges to run its own load - paying the
       // charge overhead and a discharge loss to move energy that could have
       // flowed straight in. Covering costs `load - budget`; charging instead
       // costs `load - (budget - overhead) * dischargeEfficiency`, which is
       // always worse, whatever the two numbers are. Below minToCharge there's
-      // no charge to displace, so a partial shortfall isn't worth importing.
-      const worthImporting = loadBudget >= limits.minToCharge;
-      if (load <= loadBudget || worthImporting) {
+      // no charge to displace, so a shortfall isn't worth importing.
+      if (load <= loadBudget || loadBudget >= limits.minToCharge) {
         acOn[sn] = true;
         loadBudget -= load;
       }

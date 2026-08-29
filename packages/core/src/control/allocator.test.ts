@@ -12,9 +12,16 @@ const LIMITS: AllocatorLimits = {
 };
 
 describe("allocate", () => {
-  test("disconnects everyone at min when there isn't enough solar", () => {
+  test("charges nobody when there isn't enough solar", () => {
+    // Both still get AC - there's solar, and they draw nothing beyond a load
+    // they don't currently have - but neither is picked to charge.
     const result = allocate([SN1, SN2], { [SN1]: 50, [SN2]: 50 }, {}, {}, 100, LIMITS);
     assert.deepEqual(result.watts, { [SN1]: 100, [SN2]: 100 });
+    assert.equal(result.activeSn, undefined);
+  });
+
+  test("disconnects everyone once solar is gone entirely", () => {
+    const result = allocate([SN1, SN2], { [SN1]: 50, [SN2]: 50 }, {}, {}, 0, LIMITS);
     assert.deepEqual(result.acOn, { [SN1]: false, [SN2]: false });
   });
 
@@ -65,8 +72,7 @@ describe("allocate", () => {
     // it wins and gets switched on at the hardware minimum instead of
     // waiting for SN2 to finish or for its own discharge floor to trip.
     const result = allocate([SN1, SN2], { [SN1]: 10, [SN2]: 90 }, { [SN2]: 400 }, { [SN1]: 100 }, 450, LIMITS);
-    assert.equal(result.acOn[SN1], true);
-    assert.equal(result.acOn[SN2], false);
+    assert.equal(result.activeSn, SN1);
     assert.equal(result.watts[SN1], 100);
   });
 
@@ -99,8 +105,6 @@ describe("allocate", () => {
     // flipping the active device on a difference this small.
     const result = allocate([SN1, SN2], { [SN1]: 41, [SN2]: 42 }, {}, {}, 500, LIMITS, SN1);
     assert.equal(result.activeSn, SN1);
-    assert.equal(result.acOn[SN1], true);
-    assert.equal(result.acOn[SN2], false);
   });
 
   test("a clearly better challenger still takes over from the sticky incumbent", () => {
@@ -109,8 +113,6 @@ describe("allocate", () => {
     // the sticky bonus doesn't just freeze the winner forever.
     const result = allocate([SN1, SN2], { [SN1]: 90, [SN2]: 10 }, {}, {}, 500, LIMITS, SN1);
     assert.equal(result.activeSn, SN2);
-    assert.equal(result.acOn[SN1], false);
-    assert.equal(result.acOn[SN2], true);
   });
 
   test("prefers whichever candidate has the least load of its own", () => {
@@ -201,12 +203,13 @@ describe("allocate", () => {
     assert.equal(result.acOn[SN1], false);
   });
 
-  test("doesn't close the plug for a device with no load to cover", () => {
-    // Nothing to pass through, so connecting it would just be needless
-    // switching - it only goes on if it actually wins the charging slot.
+  test("connects a device measuring no load at all", () => {
+    // Its load is only zero until someone switches something on, and it
+    // costs nothing to have it already on AC when that happens - a
+    // disconnected unit would discharge until the next poll noticed.
     const result = allocate([SN1, SN2], { [SN1]: 50, [SN2]: 50 }, {}, {}, 500, LIMITS);
     assert.equal(result.activeSn, SN1);
-    assert.equal(result.acOn[SN2], false);
+    assert.equal(result.acOn[SN2], true);
   });
 
   test("keeps a full device connected for passthrough while solar is sufficient", () => {
@@ -225,12 +228,13 @@ describe("allocate", () => {
     assert.deepEqual(result.watts, { [SN1]: 100, [SN2]: 377 });
   });
 
-  test("keeps a full device on passthrough below the charging threshold, but not a non-full candidate", () => {
+  test("passes through below the charging threshold without charging anyone", () => {
     // 100W of solar is below minToCharge (130W) - too little to be worth
-    // starting SN2 charging, but SN1 (full) still passes it through rather
-    // than draining its own battery for no reason.
+    // starting a charge, but both still pass it through to their own loads
+    // rather than draining their batteries for no reason.
     const result = allocate([SN1, SN2], { [SN1]: 100, [SN2]: 50 }, {}, {}, 100, LIMITS);
-    assert.deepEqual(result.acOn, { [SN1]: true, [SN2]: false });
+    assert.deepEqual(result.acOn, { [SN1]: true, [SN2]: true });
+    assert.equal(result.activeSn, undefined);
   });
 
   test("disconnects a full device once solar is entirely gone", () => {
@@ -254,7 +258,7 @@ describe("allocate", () => {
     const limits: AllocatorLimits = { ...LIMITS, houseStandbyWatts: 400 };
     const belowThreshold = allocate([SN1], { [SN1]: 50 }, {}, {}, 500, limits);
     assert.deepEqual(belowThreshold.watts, { [SN1]: 100 });
-    assert.deepEqual(belowThreshold.acOn, { [SN1]: false });
+    assert.equal(belowThreshold.activeSn, undefined);
 
     // availableWatts=600 - houseStandbyWatts=400 -> netWatts=200, minus 33W
     // conversion overhead.
