@@ -1,0 +1,60 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+Everything runs inside Docker (`network_mode: host` is required for Tuya's UDP device discovery, which isn't reliable outside a native Linux host — see the "Docker on macOS" note below). The `app` service is a throwaway container per invocation (never left running); `soltrk` is the real, long-running control loop service.
+
+```sh
+# Type-check (no build step exists — see "No build step" below)
+docker compose run --rm app npx tsc --noEmit
+# or: docker compose run --rm app npm run typecheck
+
+# Run the full test suite
+docker compose run --rm app npm test
+
+# Run a single test file
+docker compose run --rm app npx tsx --test packages/core/src/control/allocator.test.ts
+
+# Discover a Tuya device's dp codes (power sensor scale, plug switch dp)
+docker compose run --rm app soltrk discover <id> <key>
+
+# List Anker device serials bound to the account (for data/devices.json)
+docker compose run --rm app soltrk devices
+
+# Start/restart the live control loop
+docker compose up -d soltrk
+docker compose restart soltrk        # after an edit — nothing auto-reloads
+docker compose up -d --build soltrk  # after touching package.json or Dockerfile
+
+# Inspect live state
+cat data/state.json
+docker compose exec soltrk soltrk status
+```
+
+Full setup (Tuya local keys, Anker credentials, `data/devices.json`, the optional smart-plug AC cutoff) is in README.md's "One-time setup" — read it before touching device onboarding.
+
+## Architecture
+
+Ports-and-adapters monorepo (npm workspaces), same shape as the sibling `picomanager` project:
+
+- **`packages/core`** — vendor-neutral domain only: the `BatteryDriver`/`SolarSource` ports, the balance-evaluation allocator (`control/allocator.ts`), and the control loop (`control/loop.ts`). Never imports Anker or Tuya code.
+- **`packages/anker`**, **`packages/tuya`** — the adapters. `NativeAnkerClient` is a from-scratch reverse-engineered client (cloud login, AWS IoT MQTT, hand-decoded A1765 wire format) since no community library supports this device; Tuya reads two GTB-800 microinverters over the *local* protocol, no cloud.
+- **`packages/cli`** — composition root: env parsing (`config.ts`), the vendor registry wiring adapters into `BatteryDriver`/`SolarSource` (`battery/registry.ts`), and the `soltrk` CLI entrypoint.
+
+A single root `tsconfig.json` (`include: ["packages/*/src"]`) type-checks every package as one program — workspaces exist for import-boundary clarity (`@soltrk/core` etc.), not independent compilation.
+
+**No build step.** `tsc` runs with `noEmit: true` for type-checking only; the container and `npm run dev` both execute TypeScript directly via `tsx` (which uses esbuild's own parser — the installed `typescript` version only affects `tsc --noEmit`, never runtime).
+
+**Charging decision, every poll cycle:** the allocator evaluates every non-full battery as a hypothetical active candidate — `request = solar − (every other unit's measured AC input) − this unit's own measured household load − ~33W conversion overhead` — and whichever feasible candidate leaves the smallest leftover balance wins and becomes the one active charging target this cycle. A candidate's score also gets a virtual watt bonus the lower its SOC is (`SOC_URGENCY_BONUS_WATTS_PER_PERCENT`), so a low-SOC unit can win — even with a nominally infeasible request — ahead of a peer that's already drawing most of the solar; the previous cycle's winner additionally gets a flat sticky bonus so two closely-matched candidates don't flip the active unit every single cycle. None of this is fairness/ordering logic — a unit that never wins is protected by a separate, independent safety net: `GatedBatteryDriver` force-closes a gated battery's smart-plug AC cutoff below a critical SOC floor regardless of what the allocator decided, and holds it closed until a higher recovery SOC (a gap that prevents flapping right at the threshold). That rescue runs the unit in `passthrough`, not `charge` — it stops the drain without buying grid power to refill the battery.
+
+**Three AC states, not two** (`AcMode` in `core/src/battery/battery-driver.ts`): `charge` (plug closed, usage mode `STANDARD`, charges at the requested wattage plus ~33W overhead), `passthrough` (plug closed, usage mode `TIME_OF_USE`, feeds the unit's own load straight from AC with *no* charging and no overhead — measured AC in exactly equals AC out), and `battery` (plug open, unit runs its load off its own battery). Passthrough depends on each unit having an all-day MID_PEAK TOU schedule stored on it, set by hand in the Anker app once — soltrk can only switch the usage mode (`encodeSetUsageMode`), not write the schedule, which is cloud-gated. Units silently fall back to `STANDARD` whenever AC or Wi-Fi drops, so the usage mode is re-sent every cycle rather than cached. See README's "Lossless passthrough via TOU MID_PEAK" for the full derivation and live measurements.
+
+**Error handling:** anything fallible returns `Result<T, E extends Error = Error> = T | E` (`core/src/result.ts`) — narrow with `instanceof`/`in`, never a wrapper object. Errors needing typed extra data are plain `Error`s tagged with a discriminant `kind` field, not subclassed.
+
+**Adapters are factories, not classes:** `export const Thing = (props) => { /* closures for private state */ return { /* only the port's methods */ }; }`, each method typed against the port so drift is a type error (see `native-anker-client.ts`, `solar-source.ts`).
+
+**File naming is kebab-case** throughout (`gated-battery-driver.ts`, not `GatedBatteryDriver.ts`).
+
+See README.md for the full protocol reverse-engineering notes, known hardware caveats (the charge-wattage command is approximate and can't reach true zero — hence the smart-plug cutoff), and how to add a new battery/solar vendor.
