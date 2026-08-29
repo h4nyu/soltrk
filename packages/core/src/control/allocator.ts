@@ -187,16 +187,22 @@ export function allocate(
     for (const sn of byEmptiest) {
       const load = acOutputWattsBySn[sn] ?? 0;
       // How much budget this unit has to see before it's worth connecting:
-      // its own load, or - once the load is bigger than that - just enough
-      // that the leftover would otherwise have started a charge. Connecting
-      // then imports the shortfall, but the alternative is charging with
-      // that surplus while this unit discharges to run its own load, paying
-      // the charge overhead and a discharge loss to move energy that could
-      // have flowed straight in: covering costs `load - budget`, charging
-      // instead costs `load - (budget - overhead) * dischargeEfficiency`,
-      // which is worse whatever the two numbers are. Below minToCharge
-      // there's no charge to displace, so a shortfall isn't worth importing
-      // and the unit stays on its battery.
+      // its own load, or - once the load is bigger than that - minToCharge.
+      //
+      // Reading that second half as a buffer zone is the shortest way to see
+      // why: solar below minToCharge can't start a charge, so it just gets
+      // absorbed by the house and never has to be accounted for. Budget
+      // *above* that line is the part with somewhere else to go, and letting
+      // a load take it beats charging with it - charging while this unit
+      // discharges to run its own load pays the charge overhead and a
+      // discharge loss to move energy that could have flowed straight in
+      // (covering costs `load - budget`, charging instead costs
+      // `load - (budget - overhead) * dischargeEfficiency`, worse for any
+      // two numbers). So a load bigger than the budget still connects, and
+      // imports the shortfall, as long as there was chargeable budget to
+      // spend. Once the budget is down in the buffer zone there's no charge
+      // left to displace, and only a load that genuinely fits is worth
+      // connecting - importing to cover one would buy nothing.
       if (loadBudget >= Math.min(load, limits.minToCharge)) {
         acOn[sn] = true;
         loadBudget -= load;
