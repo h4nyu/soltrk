@@ -407,11 +407,18 @@ That is the entire override - it removes `battery` as an option, it does
 not pin the device to `passthrough`. `charge` still passes straight
 through, and is the only thing that raises the SOC again, since passthrough
 holds it level. So the sequence is: floor → passthrough (stop draining) →
-charge (SOC recovers, once there's solar) → discharging allowed again at
-`GATED_DISCHARGE_RESUME_SOC_PERCENT` (default 40%). That resume line sits
-above the floor so a device that just touched it has to build a real buffer
-before being handed back to discharging, rather than crossing the line
-again a few minutes later.
+charge (SOC recovers, once there's solar) → discharging allowed again as
+soon as it's back above the floor.
+
+There's deliberately no second, higher threshold to release at: the
+condition is just "is it above the floor", evaluated fresh from the current
+SOC each cycle, with no memory of which side it came from. Hysteresis would
+normally guard against flapping at the line, but there's little to flap
+here - passthrough holds SOC level rather than raising it, so a device that
+hits the floor stays put until something actually charges it, which only
+happens when there's solar to spare. An unreadable SOC leaves the
+allocator's own decision standing, since the floor is a claim about how
+empty the battery is and there's nothing to base it on.
 
 Passthrough rather than a forced charge is deliberate: it costs only the
 device's own load off the grid, with no ~33W conversion overhead and

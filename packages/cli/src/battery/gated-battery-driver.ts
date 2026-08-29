@@ -40,21 +40,19 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * holds it level, so a device below the floor sits there until the
  * allocator picks it as a charging target once there's solar for it. The
  * cycle reads floor -> passthrough (stop draining) -> charge (SOC recovers)
- * -> discharging allowed again at `dischargeResumeSocPercent`.
+ * -> discharging allowed again as soon as it's back above the floor.
  *
  * Passthrough rather than a forced charge is the point: it costs only the
  * device's own load off the grid, with no ~33W conversion overhead and
  * nothing bought to push into the battery.
  *
- * `dischargeResumeSocPercent` sits above the floor so a device that just
- * touched it isn't handed straight back to discharging on the next watt of
- * charge - it has to build a real buffer first. (It also rules out any
- * flapping at the line, though passthrough holding SOC level mostly does
- * that on its own.) Which devices are currently below the floor is tracked
- * per sn in `belowFloorSns`, since between the two thresholds the answer
- * depends on which side the device came from, not on the current SOC alone
- * - and that check runs every cycle regardless of whether the gate itself
- * needs touching (see loop.ts, which calls this unconditionally). The
+ * There's deliberately no second, higher threshold to release at: the
+ * condition is just "is it above the floor", evaluated fresh each cycle
+ * from the current SOC, with no memory of which side it came from.
+ * Hysteresis would normally guard against flapping at the line, but there's
+ * very little to flap here - passthrough holds SOC level rather than
+ * raising it, so a device that hits the floor stays put until something
+ * actually charges it, which only happens when there's solar to spare. The
  * physical `plug.setOn()` call itself is only made
  * when the desired state actually differs from the last one successfully
  * applied (`lastGateBySn`) - every physical plug in this project shares the
@@ -70,10 +68,8 @@ export const GatedBatteryDriver = (props: {
   plugsBySn: Map<string, PowerGate>;
   offWatts: number;
   dischargeFloorSocPercent: number;
-  dischargeResumeSocPercent: number;
 }): BatteryDriver => {
-  const { inner, plugsBySn, offWatts, dischargeFloorSocPercent, dischargeResumeSocPercent } = props;
-  const belowFloorSns = new Set<string>();
+  const { inner, plugsBySn, offWatts, dischargeFloorSocPercent } = props;
   const lastGateBySn = new Map<string, boolean>();
 
   const getStatus: BatteryDriver["getStatus"] = (sn) => inner.getStatus(sn);
@@ -84,16 +80,13 @@ export const GatedBatteryDriver = (props: {
 
     const status = await inner.getStatus(sn);
     const soc = Result.isErr(status) ? undefined : status.batterySoc;
-    if (soc !== undefined) {
-      if (soc <= dischargeFloorSocPercent) belowFloorSns.add(sn);
-      else if (soc >= dischargeResumeSocPercent) belowFloorSns.delete(sn);
-      // Between the two thresholds (or if soc is unknown this cycle): leave
-      // whichever side the device was already on unchanged.
-    }
-    const belowFloor = belowFloorSns.has(sn);
+    // An unreadable SOC leaves the device on whatever the allocator asked
+    // for: the floor is a claim about how empty the battery is, and without
+    // a reading there's nothing to base it on.
+    const belowFloor = soc !== undefined && soc <= dischargeFloorSocPercent;
     if (belowFloor) {
       console.warn(
-        `[gated:${sn}] SOC ${soc}% is below the ${dischargeFloorSocPercent}% discharge floor - on AC instead of its battery (discharging resumes at ${dischargeResumeSocPercent}%)`,
+        `[gated:${sn}] SOC ${soc}% is at or below the ${dischargeFloorSocPercent}% discharge floor - on AC instead of its battery`,
       );
     }
 

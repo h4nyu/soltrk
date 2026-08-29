@@ -29,7 +29,6 @@ const driverFactories: Record<string, () => BatteryDriver> = {
       plugsBySn: gatesBySn(loadTuyaPlugs()),
       offWatts: config.chargeLimitMin,
       dischargeFloorSocPercent: config.gatedDischargeFloorSocPercent,
-      dischargeResumeSocPercent: config.gatedDischargeResumeSocPercent,
     });
   },
 };
