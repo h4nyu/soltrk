@@ -630,21 +630,42 @@ that is roughly 82Wh at 10% and 285Wh at 20%, about 2.5 and 9 yen a day.
 **Backup reserve is explicitly not a goal here** - this deployment is
 optimised for electricity cost, so the floor is sized only by what keeps
 the load powered while the loop is working, never by how many hours of
-outage runtime it would leave. That is what settles it, because margin buys
-nothing else: a *total* soltrk failure ends with the plug open and the
-battery flat whatever the floor is, so the only thing a higher floor covers
-is a **transient** stall - about 21 minutes' worth at 10%. Against that,
-running at 6% is what the recorded window actually did, through 32 arrivals
-at the bottom with the load never once interrupted. The residual risk is
-real and worth stating plainly: at 6% soltrk's trigger point and the
-hardware's stopping point are the same number, so a loop that is late by
-even a cycle has nothing held back behind it. Note also that the app's 6% isn't a sharp wall: 事務室 has been
-seen reading 5%, and units sit at 6-7% still delivering 50-110W for several
-minutes before AC returns. What has never been observed is a unit left at
-6% on its battery long enough to actually stop, because the gate has always
-rescued it first - so how much time really remains below the reading is
-unknown, and the floor shouldn't be tuned on the assumption that it is
-generous.
+outage runtime it would leave.
+
+**What the two floors each do, which is not what it looks like.** The
+devices' 6% is not a discharge cutoff. Left on their own batteries they go
+straight past it - 4% and 5% have both been recorded with the unit still
+delivering its load, which is the *right* behaviour for something powering
+a fridge. What the setting actually does is the other half: whenever AC is
+present the unit charges itself back up to 6%, unprompted. That has been
+seen many times, including a recovery from 2% at 89W over an hour. So the
+two responsibilities split cleanly, and neither side can take over the
+other's:
+
+| | stops the drain | restores the level |
+|---|---|---|
+| soltrk's floor | yes, by switching to passthrough | no |
+| the devices' 6% | no | yes, whenever AC is present |
+
+**Why the floor is set to the devices' own 6% rather than higher.** The
+obvious worry is that the SOC reading is not trustworthy down here, so
+tripping at a displayed 6% might mean acting at a real 2%. That happens -
+one unit went from a steady 6% to 2% in a single minute, which no 36W load
+can do and which is the gauge recalibrating rather than the pack draining.
+But it is self-correcting: the moment the floor engages, the unit is on AC,
+and topping itself back up to 6% is exactly what it then does. A higher
+floor would buy margin against an error the hardware already repairs.
+
+**And a higher floor would not save the energy it looks like it saves.**
+Parked at 6% the units draw noticeably more AC than they deliver on the
+cycle where the SOC reads 5% - 60 to 73W - then match exactly again. Over a
+10-hour night with all three parked there: 88 such top-ups, 104Wh, 10.3W
+continuous. That looks like a cost of sitting on the reserve, but it scales
+with load (5.7W at 73W, 3.7W at 37W, 0.8W at no load - 8 to 10% throughout),
+so it is the passthrough conversion loss, not a penalty for where the floor
+is. Above the reserve the same loss simply comes out of the battery instead,
+showing up as a slow SOC decline. The floor changes which side pays, not
+how much.
 
 There's deliberately no second, higher threshold to release at: the
 condition is just "is it above the floor", evaluated fresh from the current

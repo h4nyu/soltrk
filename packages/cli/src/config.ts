@@ -72,17 +72,17 @@ export function loadConfig() {
     // lose power (e.g. an actual refrigerator). This doesn't charge it -
     // passthrough holds SOC level - it only stops the drain.
     //
-    // Set to the devices' own cutoff (6%, configured in the Anker app), so
-    // nothing is stranded above it. Anything higher is capacity the loop
-    // refuses to use and buys from the grid instead - ~82Wh across three
-    // units at 10%, ~285Wh at 20% - in exchange for margin should this
-    // protection fail to engage in time. Since backup reserve isn't a goal
-    // here (see README) that trade isn't worth taking: it buys nothing but
-    // outage runtime, and a total soltrk failure ends with the plug open
-    // and the battery flat whatever the floor is. What's given up is the
-    // ~21 minutes at 10% that would cover a *transient* stall. Running at 6
-    // is what the recorded window did, across 32 arrivals at the bottom
-    // without the load ever being interrupted.
+    // Set to the devices' own reserve (6%, configured in the Anker app).
+    // That reserve is not a discharge cutoff - left on battery the units go
+    // past it, 4% and 5% both recorded while still delivering their load -
+    // so stopping the drain is this floor's job and can't be delegated.
+    // What the devices do instead is charge themselves back to 6% whenever
+    // AC is present, which is why a higher floor buys nothing: the SOC
+    // reading is unreliable down here (a steady 6% jumped to 2% in one
+    // minute, the gauge recalibrating, not the pack draining), but the
+    // moment this floor engages the unit is on AC and repairs it itself.
+    // See README for why the top-up churn at the reserve isn't a reason to
+    // sit higher either.
     gatedDischargeFloorSocPercent: Number(process.env.GATED_DISCHARGE_FLOOR_SOC_PERCENT ?? 6),
     stateFilePath: STATE_FILE_PATH,
   };
