@@ -41,7 +41,9 @@ The real deployment runs on a Raspberry Pi (`yao@pi0.local:~/soltrk/`), not on t
 
 Three standing constraints on that:
 
-- **Ask before deploying.** Restarting the container interrupts a control loop managing real household power. Passing tests is not permission — get an explicit yes each time, and don't carry one deploy's approval over to the next.
+- **Ask before deploying, every time, per step.** Restarting the container interrupts a control loop managing real household power. Passing tests is not permission. Get an explicit yes, and don't carry one deploy's approval over to the next — including small follow-ups to something already deployed.
+
+  Be strict about what a given yes covers: `scp`-ing files, editing the Pi's `.env`, and `docker compose up -d --build` are separate changes to the live system, and a yes to "deploy?" does not authorise whichever of them happens to come next. Say which commands are about to run and confirm again before each one; never chain a copy straight into a rebuild.
 - **Prefer night for anything risky.** Container restarts and exploratory changes lose generation if done mid-afternoon.
 - **Minimize Anker cloud logins.** Every `docker compose run --rm` one-off logs in again from scratch, and too many logins from one IP risks getting it throttled (`account_locked` is already handled in `native-anker-client.ts`). Verify protocol changes with unit tests against the encoded bytes, batch live checks into a single script run, and read the long-running container's logs or `data/state.json` instead of spawning containers when that would answer the question.
 
