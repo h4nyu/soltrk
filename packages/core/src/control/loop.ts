@@ -3,7 +3,7 @@ import { dirname } from "path";
 import { SolarSource } from "../solar/solar-source";
 import { AcMode, BatteryDriver, BatteryStatus } from "../battery/battery-driver";
 import { Result } from "../result";
-import { allocate } from "./allocator";
+import { allocate, minSolarToChargeWatts } from "./allocator";
 import { readDevices } from "./devices";
 
 export type StateSnapshot = {
@@ -55,7 +55,6 @@ export type LoopDeps = {
   pollIntervalMs: number;
   chargeLimitMin: number;
   chargeLimitMax: number;
-  minSolarToChargeWatts: number;
   houseStandbyWatts: number;
   stateFilePath: string;
   recordHistory?: CycleRecorder;
@@ -114,7 +113,6 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       {
         min: deps.chargeLimitMin,
         max: deps.chargeLimitMax,
-        minToCharge: deps.minSolarToChargeWatts,
         houseStandbyWatts: deps.houseStandbyWatts,
       },
       previousActiveSn,
@@ -122,7 +120,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     if (activeSn !== undefined) previousActiveSn = activeSn;
 
     const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
-    if (netWatts >= deps.minSolarToChargeWatts && Object.values(acOn).every((on) => !on)) {
+    if (netWatts >= minSolarToChargeWatts(deps.chargeLimitMin) && Object.values(acOn).every((on) => !on)) {
       console.warn(`[loop] ${totalWatts.toFixed(1)}W solar available but every Anker unit is full or unreachable`);
     }
 

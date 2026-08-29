@@ -2,7 +2,18 @@
 // the AC input it actually draws (e.g. a 299W request measured drawing
 // ~332W) - conversion loss intrinsic to the hardware, not a configurable
 // knob.
-const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
+export const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
+
+/**
+ * The least net solar worth starting a charge with: the hardware's own
+ * minimum request plus the overhead it costs to deliver it. Derived rather
+ * than configured, because the two move together by definition - carrying
+ * it as its own setting meant lowering `chargeLimitMin` once left this
+ * behind at the old value, and solar that could have been charged with sat
+ * unused until someone noticed.
+ */
+export const minSolarToChargeWatts = (chargeLimitMin: number): number =>
+  chargeLimitMin + CHARGE_CONVERSION_OVERHEAD_WATTS;
 
 // Per point of SOC below 100%, how much of a virtual watt bonus a candidate
 // gets when ranked against others (see allocate()'s docstring) - lets a
@@ -25,7 +36,6 @@ const STICKY_INCUMBENT_BONUS_WATTS = 30;
 export type AllocatorLimits = {
   min: number;
   max: number;
-  minToCharge: number;
   // Constant floor on house consumption that's safe to assume is always
   // drawn - that much of solar never needs covering by the charger.
   houseStandbyWatts: number;
@@ -162,6 +172,7 @@ export function allocate(
   }
 
   const netWatts = Math.max(0, availableWatts - limits.houseStandbyWatts);
+  const minToCharge = minSolarToChargeWatts(limits.min);
 
   // Solar covers household loads before it charges anything. A unit whose
   // own load is fed from AC isn't draining its battery to run it, and isn't
@@ -203,7 +214,7 @@ export function allocate(
       // spend. Once the budget is down in the buffer zone there's no charge
       // left to displace, and only a load that genuinely fits is worth
       // connecting - importing to cover one would buy nothing.
-      if (loadBudget >= Math.min(load, limits.minToCharge)) {
+      if (loadBudget >= Math.min(load, minToCharge)) {
         acOn[sn] = true;
         loadBudget -= load;
       }
@@ -214,7 +225,7 @@ export function allocate(
   // budget ran out (or went negative importing to cover the last one), some
   // unit is on its battery right now, and charging while that's true is the
   // round trip the coverage pass above exists to avoid.
-  if (loadBudget < limits.minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
+  if (loadBudget < minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
 
   const candidates = sns.filter((sn) => {
     const soc = socBySn[sn];

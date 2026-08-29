@@ -40,7 +40,6 @@ program
       pollIntervalMs: config.pollIntervalMs,
       chargeLimitMin: config.chargeLimitMin,
       chargeLimitMax: config.chargeLimitMax,
-      minSolarToChargeWatts: config.minSolarToChargeWatts,
       houseStandbyWatts: config.houseStandbyWatts,
       stateFilePath: config.stateFilePath,
       recordHistory: pinoCycleRecorder(),

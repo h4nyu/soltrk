@@ -39,7 +39,6 @@ export function loadConfig() {
     chargeLimitMax: 1200,
     // Below this, we don't ask any device to charge at all (avoids 100W-floor
     // grid-draw noise from tiny dawn/dusk solar trickle).
-    minSolarToChargeWatts: Number(process.env.MIN_SOLAR_TO_CHARGE_WATTS ?? 130),
     // Constant floor on house consumption (fridge compressor, routers, etc.)
     // that's safe to assume is always drawn regardless of solar - that much
     // of solar output never needs covering by the charger's ceil-rounding

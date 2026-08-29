@@ -4,10 +4,11 @@ import { allocate, AllocatorLimits } from "./allocator";
 
 const SN1 = "sn-1";
 const SN2 = "sn-2";
+// min + the 33W conversion overhead is the derived charge threshold these
+// tests sit either side of: 133W.
 const LIMITS: AllocatorLimits = {
   min: 100,
   max: 1200,
-  minToCharge: 130,
   houseStandbyWatts: 0,
 };
 
@@ -229,7 +230,7 @@ describe("allocate", () => {
   });
 
   test("passes through below the charging threshold without charging anyone", () => {
-    // 100W of solar is below minToCharge (130W) - too little to be worth
+    // 100W of solar is below the 133W charge threshold - too little to be worth
     // starting a charge, but both still pass it through to their own loads
     // rather than draining their batteries for no reason.
     const result = allocate([SN1, SN2], { [SN1]: 100, [SN2]: 50 }, {}, {}, 100, LIMITS);

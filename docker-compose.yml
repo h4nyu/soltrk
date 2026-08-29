@@ -6,10 +6,6 @@ x-env: &env
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
   POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
-  # Below net solar this low, nothing bothers to charge - matches the real
-  # measured AC floor (CHARGE_LIMIT_MIN + ~33W conversion overhead), below
-  # which switching a unit on would backfeed rather than help.
-  MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-130}
   # Constant floor on house consumption that's always safely drawn regardless
   # of solar (fridge compressor, routers, etc). 0 unless you know better -
   # only raise it to a value the house never dips below.

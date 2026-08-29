@@ -76,28 +76,45 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   (100W - there's no real "0W/off", see below);
   whether it's actually *connected* to AC is a separate per-unit decision.
   **Solar covers household loads before it charges anything**: while there's
-  any solar, units stay connected emptiest battery first for as long as the
+  any solar, units are connected emptiest battery first for as long as the
   budget lasts, so when there isn't enough to go round the units with the
   least charge to spare are the last to be left on their own batteries - and
-  a full one is the first, having the most to spare. This costs the charger nothing in net terms - the watts it
+  a full one is the first, having the most to spare. A unit measuring no
+  load is connected too: it draws nothing and costs no budget, and its load
+  is only zero until someone switches something on, which a unit already on
+  AC covers from the first watt instead of discharging until the next poll
+  notices. Everything the budget doesn't reach is disconnected and runs off
+  its own battery (see the smart-plug section under One-time setup).
+
+  Covering loads first costs the charger nothing in net terms - the watts it
   gives up are watts the other units would otherwise have pulled out of
   their own batteries - while avoiding a whole discharge/recharge round trip
   of conversion loss and cycle wear. Taken to its conclusion, **charging
   never happens while some unit is still on its battery**: the budget a unit
-  has to see before it's connected is `min(its load, MIN_SOLAR_TO_CHARGE_WATTS)`,
-  so a load bigger than the leftover is still covered - and the shortfall
-  imported - as long as that leftover could have charged instead, because
-  covering costs `load - surplus` while charging instead costs
+  has to see before it's connected is
+  `min(its load, 83W)`.
+
+  That threshold reads most easily as a **buffer zone**. Solar below it
+  can't start a charge, so it is simply absorbed
+  by the house and never has to be accounted for. Budget *above* that line
+  is the part with somewhere else to go, and letting a load take it beats
+  charging with it: covering costs `load - surplus`, charging instead costs
   `load - (surplus - overhead) x dischargeEfficiency`, which is worse for
-  any values of the two. Below `MIN_SOLAR_TO_CHARGE_WATTS` there's no charge
-  to displace, so a shortfall isn't worth importing and the unit stays on
-  its battery. A unit with no load of its own isn't
-  connected unless it wins the charging slot, since there'd be nothing to
-  pass through. A full (100% SOC) unit stays connected whenever there's any
-  solar, budget or not: it can't charge, and cutting it just makes it
-  discharge to 99% and flap the plug straight back on. Everything else is
-  disconnected and runs off its own battery (see the smart-plug section
-  under One-time setup).
+  any values of the two. So a load bigger than the budget still connects,
+  importing the shortfall, as long as there was chargeable budget to spend.
+  Once the budget is down in the buffer zone there's no charge left to
+  displace, and only a load that genuinely fits is worth connecting.
+
+  Connecting a load inside that buffer zone is never a loss, which is why
+  it's still done. If the house is drawing more than the solar, the two
+  options come out identical: connecting imports the load but leaves the
+  battery alone, not connecting imports less but drains the battery by the
+  same amount, and that drain has to be bought back later. If the house is
+  drawing less, connecting wins outright - the grid bill is unchanged, but
+  not connecting spills the surplus while draining a battery for no reason.
+  Since `HOUSE_STANDBY_WATTS` is only a floor and real house consumption
+  isn't measured, there's no telling which case is in effect, so the
+  behaviour that ties in one and wins in the other is the one to pick.
 
 ### Reverse engineering a new command
 
@@ -227,10 +244,16 @@ unit the allocator already picked to charge.
 
 ## Known caveats
 
-- **100W floor**: below ~100W of solar (e.g. dawn/dusk), the charger can't
-  be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS` (default 150W) is
-  the cutoff below which we stop trying and just let panel output do
-  whatever it does. If you know a constant amount of house load is always
+- **Hardware charge floor**: below `chargeLimitMin` (50W) of requested
+  charge, the charger can't be throttled proportionally - the firmware
+  clamps anything lower back up. The least net solar worth starting a charge
+  with is therefore that floor plus the ~33W conversion overhead, 83W, below
+  which we stop trying to charge at all and just let panel output do
+  whatever it does. It's derived from `chargeLimitMin` rather than
+  configured separately (`minSolarToChargeWatts()` in `allocator.ts`) - the
+  two move together by definition, and when it *was* a separate setting,
+  lowering `chargeLimitMin` left it stranded at the old value and solar that
+  could have been charged with went unused until someone noticed. If you know a constant amount of house load is always
   present (fridge compressor, routers, etc), set `HOUSE_STANDBY_WATTS` to it
   - that much of solar is treated as already spoken for and doesn't need
   covering by the charger. Leave at `0` (default) if unsure; setting it too
