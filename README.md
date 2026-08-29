@@ -564,14 +564,50 @@ the cleanest confirmation so far that passthrough really is level: the
 earlier drift was the plug being opened, not a leak in passthrough.
 
 **The units have a floor of their own**, set by hand in the Anker app (6%
-here), and it is a hard stop - at it the device stops supplying its load
-from the battery, so with the plug open at that moment the load simply
-loses power, which is the exact failure the discharge floor exists to
-prevent. `GATED_DISCHARGE_FLOOR_SOC_PERCENT` has to stay clear of it. The
-10% here leaves 4 points, roughly 42Wh, which against 冷蔵庫's 74W is only
-about half an hour of margin should the protection ever fail to engage.
-The app's figure isn't an exact wall either - 事務室 has been seen reading
-5%.
+here), and it holds: across 23 recorded descents no device has ever gone
+below 6%. That protects the battery, not the load - reach it with the plug
+open and there is nothing left to power the fridge. So far that has never
+happened: on all 32 arrivals at 6-7% the gate closed and AC came back
+within one to six cycles, and the load was never interrupted. But the two
+floors sitting close together is what makes the margin worth sizing, and
+`GATED_DISCHARGE_FLOOR_SOC_PERCENT` is that margin.
+
+**Size it from the recorded descents, not from the nameplate capacity.**
+Dividing 1056Wh by the load overstates the margin by about half, because a
+SOC point is not worth 10.56Wh - measured across every discharge run in the
+history it delivers 7.4Wh on 冷蔵庫 and 6.3Wh on 事務室, and it gets worse
+the lower the SOC goes (8.7Wh/point in the 30-50% band against 5-6 near the
+bottom). In the 6-20% band where the margin actually lives it is 6.8Wh.
+The history contains the answer directly: eight recorded 20%→6% descents
+took 46 minutes at their fastest, 61 median, 115 at their slowest, under
+loads of 46-110W. So at 冷蔵庫's typical 78W:
+
+| floor | margin before the device's own 6% cutoff |
+|---|---|
+| 10% | 21 min |
+| 15% | 47 min |
+| 20% | 73 min |
+| 30% | 126 min |
+
+**But margin isn't free, and 10% is the setting here.** Everything between
+the floor and 6% is capacity that never gets used: the device stops
+discharging at the floor and takes its load off AC instead, so raising the
+floor strands that energy and buys the equivalent from the grid. Across
+three units that is roughly 82Wh at 10%, and 285Wh at 20% - about 9 yen a
+day against 2.5. Nearly all of the recoverable energy sits between 20% and
+10%; going below 10% recovers only another 41Wh, which is not worth trading
+the whole buffer for. Deeper cycling also costs battery life, which pushes
+the other way and is harder to price.
+
+The margin is insurance against soltrk itself failing to act, not against
+anything currently going wrong - the gate has closed correctly on all 32
+arrivals. Note also that the app's 6% isn't a sharp wall: 事務室 has been
+seen reading 5%, and units sit at 6-7% still delivering 50-110W for several
+minutes before AC returns. What has never been observed is a unit left at
+6% on its battery long enough to actually stop, because the gate has always
+rescued it first - so how much time really remains below the reading is
+unknown, and the floor shouldn't be tuned on the assumption that it is
+generous.
 
 There's deliberately no second, higher threshold to release at: the
 condition is just "is it above the floor", evaluated fresh from the current

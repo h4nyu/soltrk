@@ -68,6 +68,16 @@ export function loadConfig() {
     // be allowed to fully drain a battery powering something that can't just
     // lose power (e.g. an actual refrigerator). This doesn't charge it -
     // passthrough holds SOC level - it only stops the drain.
+    //
+    // The value trades margin against stranded capacity. Margin is the gap
+    // to the device's own 6% cutoff (set in the Anker app) if this ever
+    // fails to engage - measured from the recorded descents, not divided out
+    // of the nameplate, which overstates it by half: a SOC point is worth
+    // about 6.8Wh down here, not 10.56. Stranded capacity is everything
+    // between the floor and 6%, which is bought from the grid instead. 10
+    // keeps about 21 minutes of margin while giving up only ~82Wh across the
+    // three units; 20 would nearly quadruple the margin but strand 285Wh.
+    // See README.
     gatedDischargeFloorSocPercent: Number(process.env.GATED_DISCHARGE_FLOOR_SOC_PERCENT ?? 10),
     stateFilePath: STATE_FILE_PATH,
   };
