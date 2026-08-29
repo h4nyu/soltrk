@@ -112,9 +112,11 @@ export type Allocation = {
  * conversion loss and cycle wear that simply doesn't happen.
  *
  * Taken to its conclusion, that means charging *never* happens while some
- * unit is still running its own load off its battery. If there's enough
- * surplus left to have started a charge but not enough to cover the next
- * load outright, the load is covered anyway and the shortfall imported:
+ * unit is still running its own load off its battery. The budget a unit has
+ * to see before it's connected is `min(its load, minToCharge)`: enough for
+ * the load, or - when the load is bigger than that - just enough that the
+ * leftover would otherwise have started a charge. In that second case it's
+ * connected anyway and the shortfall imported:
  * covering costs `load - surplus`, whereas charging that surplus instead
  * costs `load - (surplus - overhead) * dischargeEfficiency`, which is worse
  * for any values of the two, since it pays the charge overhead and a
@@ -184,16 +186,18 @@ export function allocate(
       .sort((a, b) => (socBySn[a] as number) - (socBySn[b] as number));
     for (const sn of byEmptiest) {
       const load = acOutputWattsBySn[sn] ?? 0;
-      // A load bigger than what's left is still worth connecting when the
-      // leftover was large enough to have started a charge instead: doing so
-      // imports the shortfall, but the alternative is charging with that
-      // surplus while this unit discharges to run its own load - paying the
-      // charge overhead and a discharge loss to move energy that could have
-      // flowed straight in. Covering costs `load - budget`; charging instead
-      // costs `load - (budget - overhead) * dischargeEfficiency`, which is
-      // always worse, whatever the two numbers are. Below minToCharge there's
-      // no charge to displace, so a shortfall isn't worth importing.
-      if (load <= loadBudget || loadBudget >= limits.minToCharge) {
+      // How much budget this unit has to see before it's worth connecting:
+      // its own load, or - once the load is bigger than that - just enough
+      // that the leftover would otherwise have started a charge. Connecting
+      // then imports the shortfall, but the alternative is charging with
+      // that surplus while this unit discharges to run its own load, paying
+      // the charge overhead and a discharge loss to move energy that could
+      // have flowed straight in: covering costs `load - budget`, charging
+      // instead costs `load - (budget - overhead) * dischargeEfficiency`,
+      // which is worse whatever the two numbers are. Below minToCharge
+      // there's no charge to displace, so a shortfall isn't worth importing
+      // and the unit stays on its battery.
+      if (loadBudget >= Math.min(load, limits.minToCharge)) {
         acOn[sn] = true;
         loadBudget -= load;
       }

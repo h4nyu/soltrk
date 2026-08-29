@@ -83,9 +83,10 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   gives up are watts the other units would otherwise have pulled out of
   their own batteries - while avoiding a whole discharge/recharge round trip
   of conversion loss and cycle wear. Taken to its conclusion, **charging
-  never happens while some unit is still on its battery**: if the leftover
-  is enough to have started a charge but not enough to cover the next load
-  outright, that load is covered anyway and the shortfall imported, because
+  never happens while some unit is still on its battery**: the budget a unit
+  has to see before it's connected is `min(its load, MIN_SOLAR_TO_CHARGE_WATTS)`,
+  so a load bigger than the leftover is still covered - and the shortfall
+  imported - as long as that leftover could have charged instead, because
   covering costs `load - surplus` while charging instead costs
   `load - (surplus - overhead) x dischargeEfficiency`, which is worse for
   any values of the two. Below `MIN_SOLAR_TO_CHARGE_WATTS` there's no charge
