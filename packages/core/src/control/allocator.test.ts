@@ -150,10 +150,39 @@ describe("allocate", () => {
     assert.deepEqual(result.acOn, { [SN1]: true, [SN2]: true });
   });
 
-  test("leaves a load uncovered rather than buying grid power for it", () => {
-    // Only 150W of solar against a 300W load - covering it would mean
-    // importing the shortfall, which is exactly what the battery is for.
-    const result = allocate([SN1], { [SN1]: 50 }, {}, { [SN1]: 300 }, 150, LIMITS);
+  test("imports the shortfall rather than charging while a unit discharges", () => {
+    // 500W of solar against a 300W and a 250W load. Covering both means
+    // importing 50W; the alternative is covering only SN2 and charging with
+    // the leftover 200W while SN1 runs its 250W load off its own battery -
+    // paying a charge overhead and a discharge loss to move energy that
+    // could have flowed straight in. So both get covered and nothing
+    // charges.
+    const result = allocate(
+      [SN1, SN2],
+      { [SN1]: 60, [SN2]: 30 },
+      {},
+      { [SN1]: 250, [SN2]: 300 },
+      500,
+      LIMITS,
+    );
+    assert.deepEqual(result.acOn, { [SN1]: true, [SN2]: true });
+    assert.equal(result.activeSn, undefined);
+  });
+
+  test("leaves a load on its battery when the leftover couldn't have charged anyway", () => {
+    // 150W of solar against a 300W load, and only 20W left after the 130W
+    // that SN2's load takes. There's no charge for that 20W to displace, so
+    // importing 280W to cover SN1 would buy nothing - SN1 stays on its
+    // battery, which is what the battery is for.
+    const result = allocate(
+      [SN1, SN2],
+      { [SN1]: 60, [SN2]: 30 },
+      {},
+      { [SN1]: 300, [SN2]: 130 },
+      150,
+      LIMITS,
+    );
+    assert.equal(result.acOn[SN2], true);
     assert.equal(result.acOn[SN1], false);
   });
 

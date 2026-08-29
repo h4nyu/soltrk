@@ -82,7 +82,15 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   discharging. This costs the charger nothing in net terms - the watts it
   gives up are watts the other units would otherwise have pulled out of
   their own batteries - while avoiding a whole discharge/recharge round trip
-  of conversion loss and cycle wear. A unit with no load of its own isn't
+  of conversion loss and cycle wear. Taken to its conclusion, **charging
+  never happens while some unit is still on its battery**: if the leftover
+  is enough to have started a charge but not enough to cover the next load
+  outright, that load is covered anyway and the shortfall imported, because
+  covering costs `load - surplus` while charging instead costs
+  `load - (surplus - overhead) x dischargeEfficiency`, which is worse for
+  any values of the two. Below `MIN_SOLAR_TO_CHARGE_WATTS` there's no charge
+  to displace, so a shortfall isn't worth importing and the unit stays on
+  its battery. A unit with no load of its own isn't
   connected unless it wins the charging slot, since there'd be nothing to
   pass through. A full (100% SOC) unit stays connected whenever there's any
   solar, budget or not: it can't charge, and cutting it just makes it

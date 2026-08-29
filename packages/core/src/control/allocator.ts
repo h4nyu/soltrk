@@ -113,6 +113,16 @@ export type Allocation = {
  * same either way - minus a full discharge/recharge round trip of
  * conversion loss and cycle wear that simply doesn't happen.
  *
+ * Taken to its conclusion, that means charging *never* happens while some
+ * unit is still running its own load off its battery. If there's enough
+ * surplus left to have started a charge but not enough to cover the next
+ * load outright, the load is covered anyway and the shortfall imported:
+ * covering costs `load - surplus`, whereas charging that surplus instead
+ * costs `load - (surplus - overhead) * dischargeEfficiency`, which is worse
+ * for any values of the two, since it pays the charge overhead and a
+ * discharge loss to move energy that could have flowed straight in. Only
+ * once every load is covered does the leftover go to charging.
+ *
  * Everything else is disconnected and runs off its own battery. The
  * discharge floor in GatedBatteryDriver can override that to keep a
  * near-empty battery alive - that decision needs per-device forced state
@@ -183,14 +193,29 @@ export function allocate(
       .sort((a, b) => (socBySn[a] as number) - (socBySn[b] as number));
     for (const sn of byEmptiest) {
       const load = acOutputWattsBySn[sn] ?? 0;
-      if (load > 0 && load <= loadBudget) {
+      if (load <= 0) continue;
+      // A load bigger than what's left is still worth connecting when the
+      // leftover was large enough to have started a charge instead. Doing so
+      // imports the shortfall, but the alternative is charging with that
+      // surplus while this unit discharges to run its own load - paying the
+      // charge overhead and a discharge loss to move energy that could have
+      // flowed straight in. Covering costs `load - budget`; charging instead
+      // costs `load - (budget - overhead) * dischargeEfficiency`, which is
+      // always worse, whatever the two numbers are. Below minToCharge there's
+      // no charge to displace, so a partial shortfall isn't worth importing.
+      const worthImporting = loadBudget >= limits.minToCharge;
+      if (load <= loadBudget || worthImporting) {
         acOn[sn] = true;
         loadBudget -= load;
       }
     }
   }
 
-  if (netWatts < limits.minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
+  // Charge only with solar left over once every load is covered. If the
+  // budget ran out (or went negative importing to cover the last one), some
+  // unit is on its battery right now, and charging while that's true is the
+  // round trip the coverage pass above exists to avoid.
+  if (loadBudget < limits.minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
 
   const candidates = sns.filter((sn) => {
     const soc = socBySn[sn];
