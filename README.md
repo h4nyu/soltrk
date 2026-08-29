@@ -545,6 +545,16 @@ holds it level. So the sequence is: floor → passthrough (stop draining) →
 charge (SOC recovers, once there's solar) → discharging allowed again as
 soon as it's back above the floor.
 
+**An SOC that can't be read counts as below the floor.** The two ways of
+being wrong aren't symmetric: treating a full battery as empty costs one
+cycle of passthrough, which holds SOC level and buys only the device's own
+load off the grid, while treating an empty one as fine leaves the cutoff
+open and keeps discharging it with no reading left to stop it. This isn't
+hypothetical - the first cycle after any container restart has no Anker
+status yet, and the earlier "defer to the allocator" behaviour was observed
+putting all three units back on their batteries at 6-10% SOC before the next
+cycle recovered.
+
 There's deliberately no second, higher threshold to release at: the
 condition is just "is it above the floor", evaluated fresh from the current
 SOC each cycle, with no memory of which side it came from. Hysteresis would

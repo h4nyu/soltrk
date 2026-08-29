@@ -32,7 +32,9 @@ export function gatesBySn(plugs: TuyaPlugConfig[]): Map<string, PowerGate> {
  * stop its own battery draining to zero powering whatever it's plugged into
  * (e.g. an actual refrigerator). So below `dischargeFloorSocPercent`, this
  * driver simply stops letting it run on its battery: `battery` is replaced
- * with `passthrough`, feeding the device's load from AC instead.
+ * with `passthrough`, feeding the device's load from AC instead. An SOC that
+ * can't be read counts as below the floor, since the failure that matters is
+ * draining a battery nobody can see.
  *
  * That is all the floor does - it takes `battery` off the table, it does not
  * pin the device to `passthrough`. `charge` still passes straight through,
@@ -80,13 +82,19 @@ export const GatedBatteryDriver = (props: {
 
     const status = await inner.getStatus(sn);
     const soc = Result.isErr(status) ? undefined : status.batterySoc;
-    // An unreadable SOC leaves the device on whatever the allocator asked
-    // for: the floor is a claim about how empty the battery is, and without
-    // a reading there's nothing to base it on.
-    const belowFloor = soc !== undefined && soc <= dischargeFloorSocPercent;
+    // An unreadable SOC counts as below the floor. The two ways of being
+    // wrong aren't equally bad: treating a full battery as empty costs a
+    // cycle of passthrough, which holds SOC level and buys the device's own
+    // load off the grid, while treating an empty one as fine keeps
+    // discharging it with the physical cutoff open and nothing left to stop
+    // it. Seen live - every restart's first cycle reports no SOC yet, and
+    // put all three units back on their batteries at 6-10%.
+    const belowFloor = soc === undefined || soc <= dischargeFloorSocPercent;
     if (belowFloor) {
       console.warn(
-        `[gated:${sn}] SOC ${soc}% is at or below the ${dischargeFloorSocPercent}% discharge floor - on AC instead of its battery`,
+        soc === undefined
+          ? `[gated:${sn}] SOC unknown - on AC instead of its battery until it reads again`
+          : `[gated:${sn}] SOC ${soc}% is at or below the ${dischargeFloorSocPercent}% discharge floor - on AC instead of its battery`,
       );
     }
 

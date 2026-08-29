@@ -192,15 +192,31 @@ describe("GatedBatteryDriver", () => {
     assert.deepEqual(inner.calls, []);
   });
 
-  test("leaves a device on its battery when SOC is unknown", async () => {
+  test("holds a device on AC when SOC is unknown", async () => {
+    // An SOC that can't be read is treated as below the floor. Being wrong
+    // that way costs a cycle of passthrough; being wrong the other way keeps
+    // draining a battery with the cutoff open and no reading to stop it.
     const inner = fakeInner(undefined);
     const gate = fakeGate();
 
     const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, OFF_WATTS);
 
-    assert.ok(Result.isOk(result));
-    assert.deepEqual(gate.calls, [false]);
-    assert.deepEqual(inner.calls, []);
+    assert.equal(result, "passthrough");
+    assert.deepEqual(gate.calls, [true]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: OFF_WATTS, mode: "passthrough" }]);
+  });
+
+  test("still charges a device whose SOC is unknown when the allocator picks it", async () => {
+    // The unreadable-SOC rule takes `battery` off the table, exactly like the
+    // floor itself does - it doesn't block the one mode that refills.
+    const inner = fakeInner(undefined);
+    const gate = fakeGate();
+
+    const result = await driver(inner, new Map([[GATED_SN, gate]])).setChargeLimit(GATED_SN, 400, "charge");
+
+    assert.equal(result, "charge");
+    assert.deepEqual(gate.calls, [true]);
+    assert.deepEqual(inner.calls, [{ sn: GATED_SN, watts: 400, mode: "charge" }]);
   });
 
   test("goes back to its battery as soon as it's charged above the floor again", async () => {
@@ -220,9 +236,10 @@ describe("GatedBatteryDriver", () => {
     assert.deepEqual(gate.calls, [true, false]);
   });
 
-  test("defers to the allocator when SOC is unreadable", async () => {
-    // The floor is a claim about how empty the battery is; with no reading
-    // there's nothing to base it on, so the allocator's own decision stands.
+  test("does not release a device back to its battery when SOC stops reading", async () => {
+    // The case that prompted this: after a restart the first cycle has no
+    // status yet, and the old behaviour handed all three units straight back
+    // to their batteries at 6-10% SOC.
     const inner = fakeInnerWithMutableSoc();
     const gate = fakeGate();
     const d = driver(inner, new Map([[GATED_SN, gate]]));
@@ -233,7 +250,8 @@ describe("GatedBatteryDriver", () => {
     inner.soc = undefined; // status read fails this cycle
     await d.setChargeLimit(GATED_SN, OFF_WATTS, "battery");
 
-    assert.deepEqual(gate.calls, [true, false]);
+    // Still closed, and the plug wasn't needlessly re-commanded.
+    assert.deepEqual(gate.calls, [true]);
   });
 
   test("does not re-invoke the plug when the gate state hasn't changed since last time", async () => {
