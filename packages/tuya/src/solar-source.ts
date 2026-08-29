@@ -19,6 +19,19 @@ const RECONNECT_INTERVAL_MS = 30_000;
 // resolving its current IP for this attempt (see tryConnect).
 const FIND_TIMEOUT_SEC = 10;
 
+// Observed live: a GTB-800 sitting in direct summer sun can suddenly report
+// almost exactly half its immediately-prior reading, then recover minutes
+// later - consistent with the panel's own thermal protection halving
+// output rather than a connectivity blip (which reads as 0/missing, not a
+// clean fraction). Only checked above THERMAL_WATCH_MIN_WATTS so dawn/dusk
+// noise near zero doesn't produce meaningless ratios. This can't distinguish
+// a real thermal event from a sudden cloud passing overhead - both look
+// like the same kind of drop - so treat the log line as "worth a look", not
+// a confirmed diagnosis.
+const THERMAL_HALVING_RATIO_MIN = 0.4;
+const THERMAL_HALVING_RATIO_MAX = 0.6;
+const THERMAL_WATCH_MIN_WATTS = 50;
+
 /**
  * Implements @soltrk/core's SolarSource port for the two GTB-800
  * microinverters, read over the Tuya *local* protocol (no cloud). Never
@@ -71,7 +84,18 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
       client.on("data", (data) => {
         const raw = data.dps?.[cfg.powerDp];
         if (typeof raw === "number") {
-          tracked.lastWatts = raw / cfg.powerScale;
+          const newWatts = raw / cfg.powerScale;
+          const prevWatts = tracked.lastWatts;
+          if (prevWatts !== undefined && prevWatts >= THERMAL_WATCH_MIN_WATTS) {
+            const ratio = newWatts / prevWatts;
+            if (ratio >= THERMAL_HALVING_RATIO_MIN && ratio <= THERMAL_HALVING_RATIO_MAX) {
+              console.warn(
+                `[tuya:${cfg.name}] output dropped to ${(ratio * 100).toFixed(0)}% of its previous ` +
+                  `reading (${prevWatts.toFixed(1)}W -> ${newWatts.toFixed(1)}W) - possible thermal throttle`,
+              );
+            }
+          }
+          tracked.lastWatts = newWatts;
           tracked.lastUpdatedAt = Date.now();
           console.log(`[tuya:${cfg.name}] ${tracked.lastWatts.toFixed(1)}W`);
         }
