@@ -458,8 +458,19 @@ secrets-heavy the way Tuya's numbered keys were) - declared in the `x-env`
 block at the top of `docker-compose.yml` (required ones as bare `${VAR}`,
 optional ones with a `${VAR:-default}` fallback), which is the source of
 truth for what exists and its default, not a separate `.env.example`.
-Create a git-ignored `.env` next to it with at least `ANKER_EMAIL` and
+Create a git-ignored `.env` next to it with `ANKER_EMAIL` and
 `ANKER_PASSWORD`.
+
+**Put credentials in `.env` and nothing else.** Tuning values
+(`HOUSE_STANDBY_WATTS`, `GATED_DISCHARGE_FLOOR_SOC_PERCENT`, …) belong in
+`docker-compose.yml`'s defaults, where they are version-controlled and
+travel with the code. A value pinned in `.env` silently overrides whatever
+the repo says, and because `.env` is git-ignored nothing catches the drift:
+this bit once, when the floor was changed to 6% in the repo, deployed, and
+went on running at 10% because the Pi's `.env` still pinned it - with tests
+and type-checks passing throughout. `.env` on the Pi accumulated a dead
+`MIN_SOLAR_TO_CHARGE_WATTS` the same way, months after the code stopped
+reading it.
 
 To find your device serials:
 

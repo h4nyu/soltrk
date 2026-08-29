@@ -61,7 +61,10 @@ export function loadConfig() {
     // and backfeeds the remainder while undershooting only imports a few
     // watts. See README. Most of that 100W is still unaccounted for; it's
     // worth more to find than to model.
-    houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 0),
+    // docker-compose.yml always supplies this, and is where the value is
+    // set; the fallback here only applies when running outside compose, and
+    // is kept equal to it so the two can't drift unnoticed.
+    houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 80),
     // Below this SOC, a gated device (see GatedBatteryDriver) is no longer
     // allowed to run off its own battery: its plug closes and it feeds its
     // load from AC in passthrough instead. The physical AC cutoff must never
