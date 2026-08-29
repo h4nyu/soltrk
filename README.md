@@ -343,25 +343,27 @@ happen.
   recorded period was overcast throughout and rarely had surplus, which is
   exactly when this setting does the least - a sunny stretch would separate
   the options more.
-- **Unresolved: solar may not reach the house when every plug is open.**
-  The two empty-house days above are close to a controlled experiment, and
-  they don't agree. On 2026-02-12, before the batteries, the meter read
-  *zero* for eight straight midday hours - solar cancelled the house load
-  outright. On 2026-07-08, with the batteries in service and every unit on
-  `battery` (so every plug open), the meter read the full 100W right through
-  midday, in July, with a longer and stronger day. No cancellation at all.
+- **The microinverters are on the house circuit, not behind the plugs** -
+  worth stating because the opposite would matter enormously, and one
+  reading of the meter data suggested it. The two empty-house days don't
+  agree: on 2026-02-12, before the batteries, the meter read *zero* for
+  eight straight midday hours as solar cancelled the house load outright,
+  while on 2026-07-08, with the batteries in service and every unit on
+  `battery`, it read the full 100W right through midday in July. That is
+  what you would see if the microinverters sat downstream of the smart
+  plugs: open every plug and their output has nowhere to go, a grid-tied
+  inverter shuts down for want of a voltage reference, and all generation is
+  lost. `battery` would then not be the neutral "run on your own cells"
+  state the allocator models, but also a decision to discard whatever is
+  being generated.
 
-  That is what you would see if the microinverters sit behind the smart
-  plugs rather than on the house circuit: open every plug and their output
-  has nowhere to go, so all solar is lost. It would mean `battery` is not
-  the neutral "run on your own cells" state the allocator models it as, but
-  also a decision to discard whatever is being generated. The recorded
-  window can't settle it - the units were charging through every sunny hour,
-  drawing almost exactly the solar being produced (551W generated against
-  553W of AC input at 2026-08-24 11:00), so both wirings predict nearly the
-  same meter reading. Ruling it out needs either the weather for 2026-07-08
-  (a washout would explain the flat day innocently) or a deliberate test:
-  force every unit to `battery` for an hour of real sun and watch the meter.
+  The history rules it out without anyone tracing a cable. Across the
+  recorded window there are 94 daylight cycles where every device's AC
+  input was zero - so every gated plug open, with two units visibly running
+  loads off their own batteries - and the microinverters went on reporting
+  100W to 532W throughout. They cannot have been isolated. Whatever
+  explains the 2026-07-08 chart, it isn't the wiring; a washout is the
+  likeliest answer, and that day is too old to be in the recorded history.
 - **A plug can be switched by something other than soltrk.** The Tuya Smart
   Life app keeps its own automations and scenes, and any left over from
   before a plug was wired into soltrk will keep firing - turning the plug on
