@@ -242,6 +242,20 @@ holds its SOC steady rather than climbing; refilling it is left to the
 allocator once there's solar to do it with. The floor never downgrades a
 unit the allocator already picked to charge.
 
+**What the old forced-charge rescue actually cost**, measured off the logs
+rather than modelled. Summing `acInput - acOutput` across every device over
+the 67 hours of the recorded window with no solar to speak of (under 30W),
+the rescue bought **5.31 kWh from the grid and pushed it into batteries at
+night**. 2.35 kWh of that - 44% - was the conversion overhead, burned
+without ever reaching a cell; the 2.96 kWh that did get stored comes back
+at about 90%. Net waste around 2.65 kWh over five days, roughly 6,000 yen a
+year at 31 yen/kWh, which independently reproduces the figure the replay
+simulation had estimated. A representative moment: 冷蔵庫 at 7% drawing
+208W in against 125W out, the 83W difference being `chargeLimitMin` (50W at
+the time) plus the 33W overhead exactly. Under passthrough the same
+situation reads 125W in against 125W out, and the charging simply doesn't
+happen.
+
 ## Known caveats
 
 - **Small charges are mostly loss.** The ~33W conversion overhead is near
