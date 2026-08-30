@@ -34,7 +34,14 @@ export type StateSnapshot = {
     // overhead to do it). This is what the driver reported back, so it
     // reflects the discharge floor having overridden the allocator rather
     // than the allocator's own request.
-    mode: AcMode;
+    //
+    // undefined when the command failed and no earlier one had succeeded:
+    // the device is then in whatever state it was already in, which nothing
+    // here knows. Reporting the mode that was *asked* for would be worse
+    // than reporting nothing, since the request is exactly what didn't
+    // happen - and `battery`, the most common request, is the one state
+    // that means the load is running down a pack.
+    mode: AcMode | undefined;
     // The allocator's ranking score for this device this cycle (lower won) -
     // undefined if it wasn't a feasible candidate at all this cycle (full,
     // unknown SOC, or infeasible even with its SOC-urgency bonus).
@@ -82,6 +89,11 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
   // cycles with no winner at all (e.g. overnight) rather than resetting, so
   // the last real incumbent keeps its edge once solar returns.
   let previousActiveSn: string | undefined;
+
+  // The last mode each device was actually confirmed to be in. Used only
+  // when this cycle's command fails, where the honest answer is "still
+  // whatever it was" rather than "whatever we just asked for".
+  const lastAppliedModeBySn = new Map<string, AcMode>();
 
   while (!stopping) {
     const deviceEntries = readDevices();
@@ -140,9 +152,16 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       const commandResult = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, mode);
       // What the driver actually did, which can differ from what was asked -
       // the discharge floor turns `battery` into `passthrough` (see
-      // GatedBatteryDriver). Fall back to the request only when the command
-      // failed outright and there's nothing better to record.
-      const appliedMode = Result.isErr(commandResult) ? mode : commandResult;
+      // GatedBatteryDriver). A failed command leaves the device where it
+      // already was, so report that rather than the request: the request is
+      // precisely what did not take effect. Seen live on 2026-08-30, where
+      // the first cycles after a restart logged 🔋 on all three units while
+      // the driver had in fact chosen passthrough and the plugs had never
+      // opened - the Tuya side was still reconnecting, so setOn() failed.
+      const appliedMode = Result.isErr(commandResult)
+        ? lastAppliedModeBySn.get(sn)
+        : commandResult;
+      if (appliedMode !== undefined) lastAppliedModeBySn.set(sn, appliedMode);
       const status = statusBySn[sn];
       deviceStates.push({
         sn,
@@ -192,7 +211,8 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       battery: "🔋",
     };
     const line = (d: StateSnapshot["devices"][number]): string =>
-      `${d.name ?? d.sn}:${MODE_ICON[d.mode]}${d.mode === "charge" ? `${w(d.targetWatts)}W` : ""} ` +
+      `${d.name ?? d.sn}:${d.mode === undefined ? "❔" : MODE_ICON[d.mode]}` +
+      `${d.mode === "charge" ? `${w(d.targetWatts)}W` : ""} ` +
       `${w(d.acInputWatts)}W>${d.batterySoc ?? "?"}%>${w(d.acOutputWatts)}W` +
       (d.score === undefined ? "" : ` s=${w(d.score)}W`);
     console.log(
