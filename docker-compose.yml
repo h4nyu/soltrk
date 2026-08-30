@@ -7,11 +7,13 @@ x-env: &env
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
   POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
   # Constant floor on house consumption that's always safely drawn regardless
-  # of solar. Only ever set it to a level the house never dips below: too
-  # high reserves solar the house won't take, and the remainder backfeeds.
-  # Measured at 100W here off the retailer's smart-meter chart on days the
-  # house was empty; 80 keeps the error on the safe side. See README.
-  HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-80}
+  # of solar. Set it below what the house really draws: while charging, the
+  # grid draw settles at exactly `house - this`, so the gap is the operating
+  # bias. Too high and the allocator reserves solar the house won't take and
+  # the remainder backfeeds. Measured at 99W here (see README); 70 buys about
+  # 29W continuously in exchange for never exporting. chargeLimitMin has to
+  # move with this - it is `house - this`.
+  HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-70}
   # Below this SOC a gated device stops running off its own battery: its plug
   # closes and it feeds its load from AC in passthrough instead. The AC cutoff
   # must never fully drain a battery powering something that can't lose power

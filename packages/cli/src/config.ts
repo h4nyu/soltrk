@@ -40,27 +40,36 @@ export function loadConfig() {
     // generation that gets exported for nothing - 133W wide at 100, which
     // on 2026-08-30 left 55W being exported at 236W of generation.
     //
+    // It is not free to pick, though: it has to cancel out however far
+    // HOUSE_STANDBY_WATTS sits below the real house draw, or charging starts
+    // before the true surplus covers the overhead. Charging begins at
+    // `solar = this + 33 + standby + loads`, where the real surplus is
+    // `this + 33 + standby - house`, and that must clear the 33W overhead -
+    // so this = house - standby. At a measured 99W house and 70W standby
+    // that is ~30. Change one and the other has to move with it.
+    //
     // (On the hardware: the Anker app's own "交流電池充電" slider stops at
     // 100W, but a live test on 2026-08-24 taking it down to 1W showed
     // sub-100W requests do scale the real charge current roughly
     // proportionally, so this can go well below what the app offers.)
-    chargeLimitMin: 20,
+    chargeLimitMin: 30,
     chargeLimitMax: 1200,
     // Constant floor on house consumption that's safe to assume is always
     // drawn regardless of solar - that much of solar output never needs
     // covering by the charger's ceil-rounding margin. Wanted is the floor
     // the house never dips below, not its average, so only loads that never
     // switch off count (lighting doesn't). 0 (default/safe) if unknown.
-    // Measured at 100W here, off the retailer's own smart-meter chart for
-    // two days the house was empty; .env sets 80, deliberately under the
-    // measurement, because overshooting reserves solar the house won't take
-    // and backfeeds the remainder while undershooting only imports a few
-    // watts. See README. Most of that 100W is still unaccounted for; it's
-    // worth more to find than to model.
+    // Measured at 99W (see README), and deliberately set below that: while
+    // charging, the grid draw settles at exactly `house - this`, so the gap
+    // is the operating bias. 70 buys about 29W continuously rather than
+    // risking any export, which is the preference here - the round trip on
+    // those watts costs a tenth of them, where exported watts are lost
+    // whole. Most of that 99W is still unaccounted for; it's worth more to
+    // find than to model.
     // docker-compose.yml always supplies this, and is where the value is
     // set; the fallback here only applies when running outside compose, and
     // is kept equal to it so the two can't drift unnoticed.
-    houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 80),
+    houseStandbyWatts: Number(process.env.HOUSE_STANDBY_WATTS ?? 70),
     // Below this SOC, a gated device (see GatedBatteryDriver) is no longer
     // allowed to run off its own battery: its plug closes and it feeds its
     // load from AC in passthrough instead. The physical AC cutoff must never
