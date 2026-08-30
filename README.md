@@ -333,15 +333,33 @@ happen.
   standing is about 33,000 yen a year, against the roughly 5,900 the whole
   passthrough rework saves.
 
-  Two cautions on reading these charts. Check the bucket width before
-  dividing: the bars are hourly here, confirmed by the total (16 bars of
-  0.10 is 1.60; at half-hourly the same 16 hours would need 32 bars and
-  total 3.20) and by measuring the plot - 16 bars evenly spaced 35px apart
-  with a 313px gap, so 24 slots of which 8 are empty. And the reading is
-  only the floor on a day with *no* solar reaching the house; the Feb 12
-  daytime bars are absent precisely because solar cancelled the house load
-  outright, which is what makes the empty-house night hours the number to
-  use.
+  **The better method: subtract what soltrk already meters.** Waiting for an
+  empty house isn't necessary. Overnight there is no solar, and every gated
+  unit in passthrough reports its own AC draw, so the house is just the
+  meter reading minus the sum of those - and the sleeping hours give the
+  cleanest read, before anyone is up to add anything. For the night of
+  2026-08-29/30 the meter sat flat at 200W from 00:30 onward while soltrk's
+  three units averaged 101W across 01:00-07:00, putting the house at
+  **99W**. That independently reproduces the 100W the empty-day charts gave,
+  and it can be repeated on any night without arranging anything.
+
+  It also shows up things a daily total would hide: the 00:00-00:30 bucket
+  read 400W, 200W above the rest of the night, so something runs until
+  half past midnight. Small in itself (0.1 kWh) but about 1,100 yen a year
+  if it is nightly.
+
+  Two cautions on reading these charts. **Check the bucket width before
+  dividing, and don't assume it's the same everywhere** - the mobile app
+  plots hourly and the web portal half-hourly, so the same 0.1 bar means
+  100W in one and 200W in the other. The total settles it: on 2026-08-30 the
+  web view showed 1.9 kWh with bars from 00:00 to 09:00, which needs 18
+  half-hour buckets (0.2 + 17 x 0.1); hourly would only reach 1.1. The Feb
+  12 mobile screenshot went the other way - 16 bars evenly spaced 35px apart
+  with a 313px gap, so 24 slots of which 8 are empty, and 16 x 0.10 = 1.60
+  exactly. And an empty-day reading is only the floor when *no* solar is
+  reaching the house: the Feb 12 daytime bars are absent precisely because
+  solar cancelled the house load outright, which is what makes the night
+  hours the ones to use.
 
   Replaying 5.5 days of recorded profile through 0/15/30/50/80/110W showed
   everything from 0 to 50W landing within +-0.2 kWh of each other over the
