@@ -258,24 +258,36 @@ happen.
 
 ## Known caveats
 
-- **Small charges are mostly loss.** The ~33W conversion overhead is near
-  enough fixed whatever the rate, so charging at 50W costs 83W to deliver
-  (60% efficient, ~54% once the discharge loss is counted), against 75% at
-  100W and 86% at 200W. `chargeLimitMin` (100W) is therefore the least
-  charge worth *starting*, not a hardware limit - the app's own slider stops
-  at 100W but a live test took the API down to 1W and found sub-100W
-  requests do scale the real charge current proportionally.
+- **Small charges are inefficient, but they beat the alternative here.** The
+  ~33W conversion overhead is near enough fixed whatever the rate, so
+  charging at 50W costs 83W to deliver (60% efficient, ~54% once the
+  discharge loss is counted), against 75% at 100W and 86% at 200W. That
+  looks like a reason to refuse small charges, and it was read that way for
+  a while - `chargeLimitMin` sat at 100W on the grounds that surplus which
+  doesn't charge is absorbed by the house at 1:1, which beats storing it at
+  60%.
 
-  It used to be pushed as low as the hardware would tolerate, because a
-  device that shouldn't charge still had to be sent *some* wattage - there
-  was no way to say zero. Passthrough says zero properly now, so the only
-  remaining pressure on this value is upward. What caps it is that it also
-  sets the solar needed before charging starts at all
-  (`minSolarToChargeWatts()` in `allocator.ts`: this plus the 33W overhead,
-  with household loads and `HOUSE_STANDBY_WATTS` on top, so roughly 278W of
-  panel output at 100W) - raise it too far and an overcast day never charges
-  anything. Note that surplus which doesn't charge isn't wasted: it's
-  absorbed by the house at 1:1, which beats storing it at 60%.
+  **That only holds if the house actually absorbs it.** There is no export
+  contract on this installation, so surplus the house doesn't take is
+  handed to the grid for nothing. Against 0%, a 34%-efficient charge wins.
+  The comparison to make is therefore not "60% versus 100%" but "60% versus
+  nothing", and it comes out as: charge whenever the surplus exceeds the
+  overhead. Storing `W` watts costs `W + 33` and returns `0.9W`, so with
+  surplus `S` the gain is `0.9W` when `S >= W + 33` (free) and `S - 33 -
+  0.1W` when it isn't (still positive for any sane `W` once `S` clears
+  ~35W).
+
+  So `chargeLimitMin` is set to 20W, and it is a policy floor rather than a
+  hardware one - the app's own slider stops at 100W, but a live test took
+  the API down to 1W and found sub-100W requests scale the real charge
+  current proportionally. It also sets the solar needed before charging
+  starts at all (`minSolarToChargeWatts()` in `allocator.ts`: this plus the
+  33W overhead, with household loads and `HOUSE_STANDBY_WATTS` on top), so
+  raising it doesn't merely make charges more efficient - it widens the band
+  of generation that is exported for nothing. At 100W that band was 133W
+  wide. Observed live on 2026-08-30: 236W of generation against 100W of
+  house and 81W of unit loads, so 55W going to the grid unpaid, while the
+  threshold sat at 294W and nothing charged.
 
   That threshold is derived rather than configured, because the two move
   together by definition. When it *was* a separate setting, lowering
