@@ -697,6 +697,25 @@ is. Above the reserve the same loss simply comes out of the battery instead,
 showing up as a slow SOC decline. The floor changes which side pays, not
 how much.
 
+**The top-ups stop once a unit has been charged up, which points at the
+gauge.** The night of 2026-08-30/31, 冷蔵庫 held 6% across 796 consecutive
+passthrough cycles with a 64W load and took **zero** top-ups, against 56 the
+night before. The one thing that had changed was that it reached 10% during
+the day. 事務室 only got as far as 7% and went on churning, 60 top-ups and
+92Wh. That fits the recalibration story: what triggers a top-up is the
+reading dipping to 5%, and a gauge with nothing to calibrate against
+flickers there while a freshly exercised one sits still. Getting the packs
+up occasionally is therefore worth more than the stored energy alone
+suggests.
+
+**A unit idling on its own battery drains even with no load at all.** Same
+night, キッチン went 13% to 6% - about 50Wh - while measuring 0W of load
+throughout, roughly half the night on battery and half in passthrough. That
+is the unit's own electronics. It matters for how the allocator's output is
+read: charging the device with no load looks like the efficient choice,
+since everything put in is stored rather than passing through to something,
+but it does not keep what it is given overnight either.
+
 There's deliberately no second, higher threshold to release at: the
 condition is just "is it above the floor", evaluated fresh from the current
 SOC each cycle, with no memory of which side it came from. Hysteresis would
