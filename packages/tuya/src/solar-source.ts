@@ -15,6 +15,9 @@ type TrackedDevice = {
   // Set once its reading has gone stale enough to drop from the total, so
   // the warning is printed on the transition rather than every cycle.
   staleWarned?: boolean;
+  // Consecutive failed connect attempts, reset on success. Past
+  // FAILURES_BEFORE_NEW_CLIENT the client itself is replaced.
+  failedConnects: number;
 };
 
 // How often to ask each device for its current reading. **These devices do
@@ -42,6 +45,12 @@ const REFRESH_INTERVAL_MS = 30_000;
 // that still claims to be up.
 const STALE_AFTER_MS = 120_000;
 const RECONNECT_INTERVAL_MS = 30_000;
+// Retrying a wedged TuyAPI client never escapes on its own, so past this
+// many consecutive failures the client object is thrown away and rebuilt.
+// Six attempts at 30s is three minutes - long enough that a device merely
+// rebooting is not disturbed, short enough to beat the forty minutes
+// gtb800-2 was stuck for before a container restart cleared it.
+const FAILURES_BEFORE_NEW_CLIENT = 6;
 // How long to listen for the device's UDP broadcast before giving up on
 // resolving its current IP for this attempt (see tryConnect).
 const FIND_TIMEOUT_SEC = 10;
@@ -88,27 +97,50 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
       await tracked.client.connect();
       tracked.connected = true;
       tracked.connectedAt = Date.now();
+      tracked.failedConnects = 0;
       console.log(`[tuya:${tracked.config.name}] connected`);
     } catch (err) {
+      tracked.failedConnects += 1;
       console.error(
         `[tuya:${tracked.config.name}] connect failed (will retry): ${(err as Error).message}`,
       );
+      // A TuyAPI client can get itself into a state that retrying never
+      // escapes: gtb800-2 spent forty minutes on 2026-09-01 failing every
+      // attempt with EHOSTUNREACH against an address it kept resolving to,
+      // and only a container restart cleared it - which discards the client
+      // object. Do that directly rather than needing a restart, since
+      // nothing above this layer can tell the difference between a panel
+      // that is genuinely off and one whose client is wedged.
+      if (tracked.failedConnects >= FAILURES_BEFORE_NEW_CLIENT) {
+        console.warn(
+          `[tuya:${tracked.config.name}] ${tracked.failedConnects} failed connects - ` +
+            `discarding the client and starting over`,
+        );
+        try {
+          tracked.client.disconnect();
+        } catch {
+          // Already unusable; nothing to salvage and nothing to report.
+        }
+        // TuyAPI extends EventEmitter at runtime but doesn't say so in its
+        // types. Worth detaching rather than leaving to GC: the old
+        // client's handlers close over `tracked`, so a late event from a
+        // client we have given up on would still write into it.
+        (tracked.client as unknown as { removeAllListeners: () => void }).removeAllListeners();
+        tracked.failedConnects = 0;
+        attachClient(tracked);
+      }
     }
   };
 
-  const connect: IF["connect"] = async () => {
-    for (const cfg of configs) {
-      const client = new TuyAPI({ id: cfg.id, key: cfg.key, version: "3.3" });
-      const tracked: TrackedDevice = {
-        config: cfg,
-        client,
-        connected: false,
-        connectedAt: 0,
-        lastWatts: undefined,
-        lastUpdatedAt: 0,
-      };
+  // Builds a fresh TuyAPI client for a device and wires everything that
+  // depends on it. Called once at startup and again whenever the existing
+  // client has to be thrown away (see FAILURES_BEFORE_NEW_CLIENT).
+  const attachClient = (tracked: TrackedDevice): void => {
+    const cfg = tracked.config;
+    const client = new TuyAPI({ id: cfg.id, key: cfg.key, version: "3.3" });
+    tracked.client = client;
 
-      // Shared by both paths that can produce a reading: the reply to our
+    // Shared by both paths that can produce a reading: the reply to our
       // own `get()`, and any unsolicited "data" the device happens to emit.
       // Both are welcome; whichever arrives first wins and the other is a
       // no-op, since an identical value re-applied changes nothing and its
@@ -153,14 +185,27 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
         }
       };
 
-      client.on("data", (data) => applyReading(data.dps));
-      client.on("error", (err) => {
-        console.error(`[tuya:${cfg.name}] error:`, err.message);
-      });
-      client.on("disconnected", () => {
-        tracked.connected = false;
-      });
+    client.on("data", (data) => applyReading(data.dps));
+    client.on("error", (err) => {
+      console.error(`[tuya:${cfg.name}] error:`, err.message);
+    });
+    client.on("disconnected", () => {
+      tracked.connected = false;
+    });
+  };
 
+  const connect: IF["connect"] = async () => {
+    for (const cfg of configs) {
+      const tracked: TrackedDevice = {
+        config: cfg,
+        client: undefined as unknown as TuyAPI,
+        connected: false,
+        connectedAt: 0,
+        lastWatts: undefined,
+        lastUpdatedAt: 0,
+        failedConnects: 0,
+      };
+      attachClient(tracked);
       devices.push(tracked);
       await tryConnect(tracked);
       void tracked.refresh?.();
