@@ -12,6 +12,9 @@ type TrackedDevice = {
   // Asks the device for a fresh reading. Assigned per device in connect(),
   // where the config and client are in scope.
   refresh?: () => Promise<void>;
+  // Set once its reading has gone stale enough to drop from the total, so
+  // the warning is printed on the transition rather than every cycle.
+  staleWarned?: boolean;
 };
 
 // How often to ask each device for its current reading. **These devices do
@@ -130,6 +133,10 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
         const changed = newWatts !== prevWatts;
         tracked.lastWatts = newWatts;
         tracked.lastUpdatedAt = Date.now();
+        if (tracked.staleWarned) {
+          console.log(`[tuya:${cfg.name}] answering again - back in the total`);
+          tracked.staleWarned = false;
+        }
         if (changed) console.log(`[tuya:${cfg.name}] ${newWatts.toFixed(1)}W`);
       };
       tracked.refresh = async (): Promise<void> => {
@@ -205,10 +212,30 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
    * once so a permanently-unreachable panel is still visible somewhere,
    * even though it no longer affects the total once it has ever reported. */
   const getTotalWatts: IF["getTotalWatts"] = () => {
+    const now = Date.now();
     let total = 0;
     for (const d of devices) {
       if (d.lastWatts === undefined) {
         console.warn(`[tuya:${d.config.name}] no reading yet - excluding from total`);
+        continue;
+      }
+      // A device that has gone unreachable keeps its last value forever
+      // otherwise, and that value is worse than nothing. Seen live on
+      // 2026-09-01: gtb800-2 dropped off the network at 11:20 and its 72W
+      // went on being added to the total for the next forty minutes, so the
+      // allocator was sizing charges against generation that had stopped.
+      // Overnight it would be worse still - a panel that died in daylight
+      // freezes at its daytime figure, and the loop spends the night
+      // believing there is sun to charge with.
+      const ageMs = now - d.lastUpdatedAt;
+      if (ageMs > STALE_AFTER_MS) {
+        if (!d.staleWarned) {
+          console.warn(
+            `[tuya:${d.config.name}] last reading is ${Math.round(ageMs / 1000)}s old - ` +
+              `excluding ${d.lastWatts.toFixed(1)}W from the total until it answers again`,
+          );
+          d.staleWarned = true;
+        }
         continue;
       }
       total += d.lastWatts;
