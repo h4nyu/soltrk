@@ -5,7 +5,15 @@ x-env: &env
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
-  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
+  # The GTB-800s push a fresh reading every 90s and nothing can make them do
+  # it sooner, so this doesn't control how fresh the solar figure is - only
+  # how long a new one waits before being acted on. Halving the loop halves
+  # that wait (30s on average, from 45s), which matters on mornings where
+  # generation moves several hundred watts in minutes. Costs: two MQTT
+  # publishes per device per cycle to AWS IoT rather than one lot, and a
+  # history file that grows twice as fast. getStatus is free either way - it
+  # reads the MQTT session's cached state, not the network.
+  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-30000}
   # Constant floor on house consumption that's always safely drawn regardless
   # of solar. Set it below what the house really draws: while charging, the
   # grid draw settles at exactly `house - this`, so the gap is the operating

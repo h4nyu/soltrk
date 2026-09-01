@@ -21,7 +21,7 @@ export function loadConfig() {
     ankerEmail: required("ANKER_EMAIL"),
     ankerPassword: required("ANKER_PASSWORD"),
     ankerCountry: process.env.ANKER_COUNTRY ?? "JP",
-    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 60_000),
+    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 30_000),
     // Not a hardware limit - the least charge worth *starting*. The ~33W
     // conversion overhead is near enough fixed whatever the rate, so a small
     // charge is inefficient: 50W costs 83W to deliver (60%, and ~54% once

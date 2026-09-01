@@ -9,11 +9,35 @@ type TrackedDevice = {
   connectedAt: number;
   lastWatts: number | undefined;
   lastUpdatedAt: number;
+  // Asks the device for a fresh reading. Assigned per device in connect(),
+  // where the config and client are in scope.
+  refresh?: () => Promise<void>;
 };
 
-// Used for zombie-connection detection (see the reconnect loop below) - a
-// tight window so a genuinely stuck socket gets kicked promptly.
-const STALE_AFTER_MS = 60_000;
+// How often to ask each device for its current reading. **These devices do
+// not push on their own** - that has to be said plainly, because the code
+// here used to assume they did and the assumption survived a long time by
+// looking exactly like a working one. There was no `get()` anywhere: the
+// only thing that ever produced a reading was the response to `connect()`.
+// With the stale threshold at 60s and the reconnect check every 30s, every
+// device was being torn down and reconnected roughly every 90 seconds, and
+// each reconnect fetched one value. The reconnect loop *was* the poller,
+// and the "90 second push cadence" measured off the logs was really the
+// reconnect cadence measuring itself.
+//
+// The tell came from raising the stale threshold to 210s to stop what
+// looked like needless reconnects: the reading interval immediately became
+// 214s. Readings tracked the threshold exactly, because they were caused by
+// it.
+//
+// So ask explicitly, and let the connection stay up. 30s matches the
+// control loop, so a cycle rarely acts on a figure more than one interval
+// old.
+const REFRESH_INTERVAL_MS = 30_000;
+// Zombie-connection detection, which only means anything now that something
+// is actually asking: four refreshes have gone unanswered on a connection
+// that still claims to be up.
+const STALE_AFTER_MS = 120_000;
 const RECONNECT_INTERVAL_MS = 30_000;
 // How long to listen for the device's UDP broadcast before giving up on
 // resolving its current IP for this attempt (see tryConnect).
@@ -81,25 +105,48 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
         lastUpdatedAt: 0,
       };
 
-      client.on("data", (data) => {
-        const raw = data.dps?.[cfg.powerDp];
-        if (typeof raw === "number") {
-          const newWatts = raw / cfg.powerScale;
-          const prevWatts = tracked.lastWatts;
-          if (prevWatts !== undefined && prevWatts >= THERMAL_WATCH_MIN_WATTS) {
-            const ratio = newWatts / prevWatts;
-            if (ratio >= THERMAL_HALVING_RATIO_MIN && ratio <= THERMAL_HALVING_RATIO_MAX) {
-              console.warn(
-                `[tuya:${cfg.name}] output dropped to ${(ratio * 100).toFixed(0)}% of its previous ` +
-                  `reading (${prevWatts.toFixed(1)}W -> ${newWatts.toFixed(1)}W) - possible thermal throttle`,
-              );
-            }
+      // Shared by both paths that can produce a reading: the reply to our
+      // own `get()`, and any unsolicited "data" the device happens to emit.
+      // Both are welcome; whichever arrives first wins and the other is a
+      // no-op, since an identical value re-applied changes nothing and its
+      // thermal ratio is 1.0.
+      const applyReading = (dps: Record<string, unknown> | undefined): void => {
+        const raw = dps?.[cfg.powerDp];
+        if (typeof raw !== "number") return;
+        const newWatts = raw / cfg.powerScale;
+        const prevWatts = tracked.lastWatts;
+        if (prevWatts !== undefined && prevWatts >= THERMAL_WATCH_MIN_WATTS) {
+          const ratio = newWatts / prevWatts;
+          if (ratio >= THERMAL_HALVING_RATIO_MIN && ratio <= THERMAL_HALVING_RATIO_MAX) {
+            console.warn(
+              `[tuya:${cfg.name}] output dropped to ${(ratio * 100).toFixed(0)}% of its previous ` +
+                `reading (${prevWatts.toFixed(1)}W -> ${newWatts.toFixed(1)}W) - possible thermal throttle`,
+            );
           }
-          tracked.lastWatts = newWatts;
-          tracked.lastUpdatedAt = Date.now();
-          console.log(`[tuya:${cfg.name}] ${tracked.lastWatts.toFixed(1)}W`);
         }
-      });
+        // The timestamp moves on every reading, the log line only when the
+        // value does: at a 30s refresh an unchanged figure is the common
+        // case and logging it would bury everything else.
+        const changed = newWatts !== prevWatts;
+        tracked.lastWatts = newWatts;
+        tracked.lastUpdatedAt = Date.now();
+        if (changed) console.log(`[tuya:${cfg.name}] ${newWatts.toFixed(1)}W`);
+      };
+      tracked.refresh = async (): Promise<void> => {
+        try {
+          const res = (await client.get({ schema: true })) as {
+            dps?: Record<string, unknown>;
+          };
+          applyReading(res?.dps);
+        } catch (err) {
+          // Left to the zombie check rather than reconnecting here: one
+          // failed request is not evidence the connection is gone, and
+          // tearing it down costs a reconnect before anything can be read.
+          console.error(`[tuya:${cfg.name}] refresh failed: ${(err as Error).message}`);
+        }
+      };
+
+      client.on("data", (data) => applyReading(data.dps));
       client.on("error", (err) => {
         console.error(`[tuya:${cfg.name}] error:`, err.message);
       });
@@ -109,7 +156,12 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
 
       devices.push(tracked);
       await tryConnect(tracked);
+      void tracked.refresh?.();
     }
+
+    setInterval(() => {
+      for (const d of devices) if (d.connected) void d.refresh?.();
+    }, REFRESH_INTERVAL_MS);
 
     setInterval(() => {
       const now = Date.now();
@@ -128,7 +180,8 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
           now - d.lastUpdatedAt >= STALE_AFTER_MS;
         if (zombie) {
           console.warn(
-            `[tuya:${d.config.name}] connected but no data for ${Math.round((now - d.lastUpdatedAt) / 1000)}s - forcing reconnect`,
+            `[tuya:${d.config.name}] no answer to ${Math.round(STALE_AFTER_MS / REFRESH_INTERVAL_MS)} refreshes ` +
+              `(${Math.round((now - d.lastUpdatedAt) / 1000)}s) - forcing reconnect`,
           );
           d.client.disconnect();
           d.connected = false;
