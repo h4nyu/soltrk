@@ -2,14 +2,25 @@
 // the AC input it actually draws (e.g. a 299W request measured drawing
 // ~332W) - conversion loss intrinsic to the hardware, not a configurable
 // knob.
-const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
+export const CHARGE_CONVERSION_OVERHEAD_WATTS = 33;
+
+/**
+ * The least net solar worth starting a charge with: the hardware's own
+ * minimum request plus the overhead it costs to deliver it. Derived rather
+ * than configured, because the two move together by definition - carrying
+ * it as its own setting meant lowering `chargeLimitMin` once left this
+ * behind at the old value, and solar that could have been charged with sat
+ * unused until someone noticed.
+ */
+export const minSolarToChargeWatts = (chargeLimitMin: number): number =>
+  chargeLimitMin + CHARGE_CONVERSION_OVERHEAD_WATTS;
 
 // Per point of SOC below 100%, how much of a virtual watt bonus a candidate
 // gets when ranked against others (see allocate()'s docstring) - lets a
 // low-SOC device outrank (and, if needed, outright win despite a nominally
 // infeasible request from) a candidate that's already drawing most of the
 // solar, without waiting for that incumbent to finish or for the hard
-// critical-SOC floor in GatedBatteryDriver to kick in.
+// discharge floor in GatedBatteryDriver to kick in.
 const SOC_URGENCY_BONUS_WATTS_PER_PERCENT = 3;
 
 // Flat virtual watt bonus for whichever candidate won the *previous* cycle
@@ -25,7 +36,6 @@ const STICKY_INCUMBENT_BONUS_WATTS = 30;
 export type AllocatorLimits = {
   min: number;
   max: number;
-  minToCharge: number;
   // Constant floor on house consumption that's safe to assume is always
   // drawn - that much of solar never needs covering by the charger.
   houseStandbyWatts: number;
@@ -57,11 +67,11 @@ export type Allocation = {
  * grid balance closest to zero (without backfeeding), after weighting for
  * how low its own SOC is, is switched on this cycle. A battery that never
  * gets its turn here can't actually run dry: that's GatedBatteryDriver's
- * job (a critical-SOC rescue forces its plug open regardless of what this
+ * job (the discharge floor closes its plug regardless of what this
  * function decides) - but waiting all the way for that hard floor was
  * observed leaving a device sitting neglected for an hour-plus at a
  * uncomfortably low SOC while a peer that had *already* recovered from its
- * own critical rescue kept winning purely on solar-utilization efficiency
+ * own trip to the floor kept winning purely on solar-utilization efficiency
  * (see SOC_URGENCY_BONUS_WATTS_PER_PERCENT below). A device with little or
  * no load of its own still naturally reaches 100% quickly and drops out of
  * contention on its own, handing the turn to whoever's next.
@@ -96,19 +106,37 @@ export type Allocation = {
  * self-correcting without the self-feedback oscillation that made us avoid
  * measured-input control for a device's own request.
  *
- * AC gate (`acOn`): a device is connected to AC when it wins the evaluation
- * above, or when it's full (SOC 100%) while there's any solar at all - a
- * full unit doesn't charge, but with AC present it passes solar through to
- * its own load instead of draining its battery, which both saves a full
- * battery from cycling 99⇄100 all afternoon (plug flapping every few minutes
- * as it self-discharges) and feeds that load from solar. Passthrough isn't
- * held to minToCharge the way a new charge candidate is - it only ever
- * draws what the load actually needs, so even solar too weak to be worth
- * starting a fresh charge session over is still worth passing through.
- * Everything else is disconnected. The critical-SOC rescue in
- * GatedBatteryDriver can override a "false" to keep a near-empty battery
- * alive - that decision needs
- * per-device forced-state and stays there.
+ * AC gate (`acOn`): solar covers household loads before it charges
+ * anything. While there's any solar at all, units are connected emptiest
+ * battery first for as long as the budget lasts - so if there isn't enough
+ * to go around, the ones with the least charge to spare are the last to be
+ * left on their own batteries, and a full unit is the first. Passthrough
+ * isn't held to minToCharge the way a new charge candidate is: it only ever
+ * draws what the load actually needs, so even solar too weak to start a
+ * charge with is worth passing through.
+ *
+ * Covering loads first is not a concession by the charger: the watts it
+ * gives up are watts the other units would otherwise have taken out of
+ * their own batteries, so the net energy stored across the system is the
+ * same either way - minus a full discharge/recharge round trip of
+ * conversion loss and cycle wear that simply doesn't happen.
+ *
+ * Taken to its conclusion, that means charging *never* happens while some
+ * unit is still running its own load off its battery. The budget a unit has
+ * to see before it's connected is `min(its load, minToCharge)`: enough for
+ * the load, or - when the load is bigger than that - just enough that the
+ * leftover would otherwise have started a charge. In that second case it's
+ * connected anyway and the shortfall imported:
+ * covering costs `load - surplus`, whereas charging that surplus instead
+ * costs `load - (surplus - overhead) * dischargeEfficiency`, which is worse
+ * for any values of the two, since it pays the charge overhead and a
+ * discharge loss to move energy that could have flowed straight in. Only
+ * once every load is covered does the leftover go to charging.
+ *
+ * Everything else is disconnected and runs off its own battery. The
+ * discharge floor in GatedBatteryDriver can override that to keep a
+ * near-empty battery alive - that decision needs per-device forced state
+ * and stays there.
  *
  * Every device's requested wattage is at least `limits.min` - the lowest
  * request the hardware accepts (below-minimum requests get clamped up by
@@ -144,18 +172,60 @@ export function allocate(
   }
 
   const netWatts = Math.max(0, availableWatts - limits.houseStandbyWatts);
+  const minToCharge = minSolarToChargeWatts(limits.min);
 
-  // Full devices pass whatever solar there is straight through to their own
-  // load - unlike starting a new charge (which has a real minimum draw, see
-  // minToCharge below), passthrough only ever draws exactly what the load
-  // needs, so there's no minimum solar required for it to be worthwhile.
+  // Solar covers household loads before it charges anything. A unit whose
+  // own load is fed from AC isn't draining its battery to run it, and isn't
+  // paying to store that energy and retrieve it again later - so covering
+  // loads first and charging with the remainder stores the same net watts
+  // as charging hard while the others discharge, minus a whole round trip
+  // of conversion losses and cycle wear. Unlike starting a charge (which
+  // has a real minimum draw, see minToCharge), passthrough only ever draws
+  // exactly what the load needs, so there's no minimum solar for it to be
+  // worth doing.
+  let loadBudget = netWatts;
   if (netWatts > 0) {
-    for (const sn of sns) {
-      if (socBySn[sn] === 100) acOn[sn] = true;
+    // Emptiest battery first, so when there isn't enough solar to go around,
+    // the units with the least charge to spare are the ones that stop
+    // discharging - and a full unit, having the most, is first to be left on
+    // its own battery. A unit measuring no load right now is connected too:
+    // it draws nothing and costs no budget, and its load is only zero until
+    // someone switches something on, which a unit already on AC covers from
+    // the first watt instead of discharging until the next poll notices.
+    const byEmptiest = sns
+      .filter((sn) => socBySn[sn] !== undefined)
+      .sort((a, b) => (socBySn[a] as number) - (socBySn[b] as number));
+    for (const sn of byEmptiest) {
+      const load = acOutputWattsBySn[sn] ?? 0;
+      // How much budget this unit has to see before it's worth connecting:
+      // its own load, or - once the load is bigger than that - minToCharge.
+      //
+      // Reading that second half as a buffer zone is the shortest way to see
+      // why: solar below minToCharge can't start a charge, so it just gets
+      // absorbed by the house and never has to be accounted for. Budget
+      // *above* that line is the part with somewhere else to go, and letting
+      // a load take it beats charging with it - charging while this unit
+      // discharges to run its own load pays the charge overhead and a
+      // discharge loss to move energy that could have flowed straight in
+      // (covering costs `load - budget`, charging instead costs
+      // `load - (budget - overhead) * dischargeEfficiency`, worse for any
+      // two numbers). So a load bigger than the budget still connects, and
+      // imports the shortfall, as long as there was chargeable budget to
+      // spend. Once the budget is down in the buffer zone there's no charge
+      // left to displace, and only a load that genuinely fits is worth
+      // connecting - importing to cover one would buy nothing.
+      if (loadBudget >= Math.min(load, minToCharge)) {
+        acOn[sn] = true;
+        loadBudget -= load;
+      }
     }
   }
 
-  if (netWatts < limits.minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
+  // Charge only with solar left over once every load is covered. If the
+  // budget ran out (or went negative importing to cover the last one), some
+  // unit is on its battery right now, and charging while that's true is the
+  // round trip the coverage pass above exists to avoid.
+  if (loadBudget < minToCharge) return { watts, acOn, scores: {}, activeSn: undefined };
 
   const candidates = sns.filter((sn) => {
     const soc = socBySn[sn];

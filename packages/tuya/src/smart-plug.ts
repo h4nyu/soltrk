@@ -51,6 +51,21 @@ export const SmartPlug = (props: { config: TuyaPlugConfig }) => {
       await client.find({ timeout: FIND_TIMEOUT_SEC });
       await client.connect();
       await client.set({ dps: config.switchDp, set: on });
+      // A resolved set() isn't proof the relay actually flipped: tuyapi can
+      // resolve it off a bare protocol ack or an empty DP_REFRESH packet
+      // (its own source calls this "always empty") without ever reporting
+      // the device's real post-set state - observed live, the promise
+      // resolved cleanly while the physical plug stayed in its old state
+      // for hours. Explicitly re-read the dp so a silently-ignored command
+      // surfaces as a real error (and gets retried below) instead of a
+      // false "success" the caller then trusts indefinitely.
+      const status = (await client.get({ schema: true })) as { dps?: Record<string, unknown> };
+      const actual = status.dps?.[config.switchDp];
+      if (actual !== on) {
+        return new Error(
+          `set(on=${on}) was acked but device now reports dp ${config.switchDp}=${JSON.stringify(actual)}`,
+        );
+      }
       return undefined;
     } catch (err) {
       return err instanceof Error ? err : new Error(String(err));

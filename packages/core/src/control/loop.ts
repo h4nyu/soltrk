@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { SolarSource } from "../solar/solar-source";
-import { BatteryDriver, BatteryStatus } from "../battery/battery-driver";
+import { AcMode, BatteryDriver, BatteryStatus } from "../battery/battery-driver";
 import { Result } from "../result";
-import { allocate } from "./allocator";
+import { allocate, minSolarToChargeWatts } from "./allocator";
 import { readDevices } from "./devices";
 
 export type StateSnapshot = {
@@ -28,6 +28,20 @@ export type StateSnapshot = {
     // The allocator's AC-gate decision for this device this cycle (see
     // control/allocator.ts) - what GatedBatteryDriver switches the plug to.
     acOn: boolean;
+    // Which of the three AC states the device was actually put into this
+    // cycle (see AcMode) - "charge" and "passthrough" both keep the plug
+    // closed, but only the former fills the battery (and pays the conversion
+    // overhead to do it). This is what the driver reported back, so it
+    // reflects the discharge floor having overridden the allocator rather
+    // than the allocator's own request.
+    //
+    // undefined when the command failed and no earlier one had succeeded:
+    // the device is then in whatever state it was already in, which nothing
+    // here knows. Reporting the mode that was *asked* for would be worse
+    // than reporting nothing, since the request is exactly what didn't
+    // happen - and `battery`, the most common request, is the one state
+    // that means the load is running down a pack.
+    mode: AcMode | undefined;
     // The allocator's ranking score for this device this cycle (lower won) -
     // undefined if it wasn't a feasible candidate at all this cycle (full,
     // unknown SOC, or infeasible even with its SOC-urgency bonus).
@@ -48,7 +62,6 @@ export type LoopDeps = {
   pollIntervalMs: number;
   chargeLimitMin: number;
   chargeLimitMax: number;
-  minSolarToChargeWatts: number;
   houseStandbyWatts: number;
   stateFilePath: string;
   recordHistory?: CycleRecorder;
@@ -76,6 +89,11 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
   // cycles with no winner at all (e.g. overnight) rather than resetting, so
   // the last real incumbent keeps its edge once solar returns.
   let previousActiveSn: string | undefined;
+
+  // The last mode each device was actually confirmed to be in. Used only
+  // when this cycle's command fails, where the honest answer is "still
+  // whatever it was" rather than "whatever we just asked for".
+  const lastAppliedModeBySn = new Map<string, AcMode>();
 
   while (!stopping) {
     const deviceEntries = readDevices();
@@ -107,7 +125,6 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
       {
         min: deps.chargeLimitMin,
         max: deps.chargeLimitMax,
-        minToCharge: deps.minSolarToChargeWatts,
         houseStandbyWatts: deps.houseStandbyWatts,
       },
       previousActiveSn,
@@ -115,19 +132,36 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     if (activeSn !== undefined) previousActiveSn = activeSn;
 
     const netWatts = Math.max(0, totalWatts - deps.houseStandbyWatts);
-    if (netWatts >= deps.minSolarToChargeWatts && Object.values(acOn).every((on) => !on)) {
+    if (netWatts >= minSolarToChargeWatts(deps.chargeLimitMin) && Object.values(acOn).every((on) => !on)) {
       console.warn(`[loop] ${totalWatts.toFixed(1)}W solar available but every Anker unit is full or unreachable`);
     }
 
     const deviceStates: StateSnapshot["devices"] = [];
     for (const sn of sns) {
       const target = targets[sn];
-      // Sent every cycle, even when target is unchanged from last time: a
-      // gated device's actual on/off decision (see GatedBatteryDriver) can
-      // depend on live SOC even when the requested wattage itself doesn't
-      // change, so skipping unchanged-looking calls would make that check
-      // silently stop running.
-      const commandResult = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, acOn[sn]);
+      // The allocator sets acOn for exactly two cases - the one candidate it
+      // picked to charge (activeSn), and any full device worth keeping on AC
+      // to pass solar through to its own load. So anything else with acOn is
+      // by construction the passthrough case.
+      const mode: AcMode = !acOn[sn] ? "battery" : sn === activeSn ? "charge" : "passthrough";
+      // Sent every cycle, even when nothing appears to have changed: a gated
+      // device's actual decision (see GatedBatteryDriver) can depend on live
+      // SOC even when the requested wattage doesn't change, and the devices
+      // themselves silently fall back out of passthrough whenever AC is
+      // interrupted - so skipping "unchanged" calls would let both drift.
+      const commandResult = await getDriver(vendorBySn[sn]).setChargeLimit(sn, target, mode);
+      // What the driver actually did, which can differ from what was asked -
+      // the discharge floor turns `battery` into `passthrough` (see
+      // GatedBatteryDriver). A failed command leaves the device where it
+      // already was, so report that rather than the request: the request is
+      // precisely what did not take effect. Seen live on 2026-08-30, where
+      // the first cycles after a restart logged 🔋 on all three units while
+      // the driver had in fact chosen passthrough and the plugs had never
+      // opened - the Tuya side was still reconnecting, so setOn() failed.
+      const appliedMode = Result.isErr(commandResult)
+        ? lastAppliedModeBySn.get(sn)
+        : commandResult;
+      if (appliedMode !== undefined) lastAppliedModeBySn.set(sn, appliedMode);
       const status = statusBySn[sn];
       deviceStates.push({
         sn,
@@ -137,6 +171,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
         acOutputWatts: Result.isErr(status) ? undefined : status.acOutputWatts,
         targetWatts: target,
         acOn: acOn[sn],
+        mode: appliedMode,
         score: scores[sn],
         lastCommandOk: Result.isOk(commandResult),
       });
@@ -157,19 +192,32 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     writeState(deps.stateFilePath, snapshot);
     deps.recordHistory?.(snapshot);
 
-    const r1 = (n: number) => n.toFixed(1);
+    // Watts are printed as whole numbers here - the readings genuinely
+    // fluctuate by more than a watt between cycles, so the decimal was only
+    // ever noise. data/state.json keeps the full precision.
+    const w = (n: number | undefined) => (n === undefined ? "?" : Math.round(n));
+    // Each device reads as its own little power flow: what comes in from AC,
+    // through the battery's charge level, and out to its household load -
+    // `189>32%>121`. Only `charge` gets a requested wattage alongside it,
+    // since for the other two the target is a floor value the device is
+    // being told to ignore; same for the score, which only exists for
+    // devices that were candidates at all this cycle.
+    // One glyph per AcMode, so the mode reads at a glance in a wall of
+    // cycles. 🔌 vs 🔋 is where the device's own load is being fed from
+    // (grid or its battery); ⚡ is on the grid *and* filling the battery too.
+    const MODE_ICON: Record<AcMode, string> = {
+      charge: "⚡",
+      passthrough: "🔌",
+      battery: "🔋",
+    };
+    const line = (d: StateSnapshot["devices"][number]): string =>
+      `${d.name ?? d.sn}:${d.mode === undefined ? "❔" : MODE_ICON[d.mode]}` +
+      `${d.mode === "charge" ? `${w(d.targetWatts)}W` : ""} ` +
+      `${w(d.acInputWatts)}W>${d.batterySoc ?? "?"}%>${w(d.acOutputWatts)}W` +
+      (d.score === undefined ? "" : ` s=${w(d.score)}W`);
     console.log(
-      `[loop] solar=${r1(totalWatts)}W input=${r1(totalAcInputWatts)}W output=${r1(totalAcOutputWatts)}W ` +
-        `balance=${balanceWatts >= 0 ? "+" : ""}${r1(balanceWatts)}W ` +
-        deviceStates
-          .map(
-            (d) =>
-              `${d.name ?? d.sn}:${d.acOn ? "ON" : "OFF"},soc=${d.batterySoc ?? "?"}%,` +
-              `in=${d.acInputWatts === undefined ? "?" : r1(d.acInputWatts)}W,` +
-              `out=${d.acOutputWatts === undefined ? "?" : r1(d.acOutputWatts)}W,` +
-              `target=${r1(d.targetWatts)}W,score=${d.score === undefined ? "-" : r1(d.score)}`,
-          )
-          .join(" "),
+      `[loop] solar=${w(totalWatts)}W bal=${balanceWatts >= 0 ? "+" : ""}${w(balanceWatts)}W | ` +
+        deviceStates.map(line).join(" | "),
     );
 
     await new Promise((r) => setTimeout(r, deps.pollIntervalMs));

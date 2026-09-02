@@ -4,8 +4,10 @@ import {
   encodeRealtimeTrigger,
   encodeSetChargeLimit,
   encodeSetTouSchedule,
+  encodeSetUsageMode,
   parseA1765ParamInfo,
   parseTlvFields,
+  PpsUsageMode,
   TouPeriodType,
 } from "./protocol";
 
@@ -132,5 +134,47 @@ describe("command encoding", () => {
       encoded.toString("hex"),
       "ff092e0003000f0090a10122a2020101a3020100a4020100a5020106a6020101a70404030018fe050347cc8a6a4a",
     );
+  });
+
+  // There is no captured app message for the usage mode on its own - the app
+  // only ever sends it as part of a full schedule save. So rather than
+  // asserting a magic hex string of our own invention, these check the
+  // encoding against the one piece of ground truth we do have: the real
+  // captured schedule messages above, which carry a2 = TIME_OF_USE.
+  test("encodeSetUsageMode emits the same a2 field the real captured messages carry", () => {
+    const capturedTou = encodeSetTouSchedule(TouPeriodType.PEAK, 0, 24, 1787481067000);
+    const usageMode = encodeSetUsageMode(PpsUsageMode.TIME_OF_USE, 1787481067000);
+    assert.deepEqual(
+      parseTlvFields(usageMode).get(0xa2),
+      parseTlvFields(capturedTou).get(0xa2),
+    );
+  });
+
+  test("encodeSetUsageMode round-trips each mode through the a2 field", () => {
+    for (const mode of Object.values(PpsUsageMode)) {
+      const fields = parseTlvFields(encodeSetUsageMode(mode, 1787481067000));
+      // a2 is a `type(1) value(1)` pair, same shape as every other ui field.
+      assert.deepEqual(fields.get(0xa2), Buffer.from([0x01, mode]));
+    }
+  });
+
+  test("encodeSetUsageMode carries no schedule fields, only a2", () => {
+    // The point of this command is to be the field-a2-only half of msgtype
+    // 0x0090 - including any of a3/a4/a6/a7 would make it the cloud-only
+    // schedule write that the device ignores from us.
+    const fields = parseTlvFields(encodeSetUsageMode(PpsUsageMode.STANDARD));
+    assert.deepEqual([...fields.keys()].sort(), [0xa1, 0xa2, 0xfe].sort());
+  });
+
+  test("encodeSetUsageMode produces a well-formed message the parser accepts", () => {
+    const encoded = encodeSetUsageMode(PpsUsageMode.TIME_OF_USE, 1787481067000);
+    // Same header shape as the captured 0x0090 messages: ff 09 <len LE16>
+    // 03 00 0f 00 90, and a trailing XOR checksum over everything before it.
+    assert.equal(encoded.subarray(0, 2).toString("hex"), "ff09");
+    assert.equal(encoded.readUInt16LE(2), encoded.length);
+    assert.equal(encoded.subarray(4, 9).toString("hex"), "03000f0090");
+    let xor = 0;
+    for (const b of encoded.subarray(0, encoded.length - 1)) xor ^= b;
+    assert.equal(encoded[encoded.length - 1], xor);
   });
 });

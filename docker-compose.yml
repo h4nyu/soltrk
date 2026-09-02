@@ -5,22 +5,34 @@ x-env: &env
 
   # optional
   ANKER_COUNTRY: &ANKER_COUNTRY ${ANKER_COUNTRY:-JP}
-  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-60000}
-  # Below net solar this low, nothing bothers to charge - matches the real
-  # measured AC floor (CHARGE_LIMIT_MIN + ~33W conversion overhead), below
-  # which switching a unit on would backfeed rather than help.
-  MIN_SOLAR_TO_CHARGE_WATTS: &MIN_SOLAR_TO_CHARGE_WATTS ${MIN_SOLAR_TO_CHARGE_WATTS:-130}
+  # The GTB-800s push a fresh reading every 90s and nothing can make them do
+  # it sooner, so this doesn't control how fresh the solar figure is - only
+  # how long a new one waits before being acted on. Halving the loop halves
+  # that wait (30s on average, from 45s), which matters on mornings where
+  # generation moves several hundred watts in minutes. Costs: two MQTT
+  # publishes per device per cycle to AWS IoT rather than one lot, and a
+  # history file that grows twice as fast. getStatus is free either way - it
+  # reads the MQTT session's cached state, not the network.
+  POLL_INTERVAL_MS: &POLL_INTERVAL_MS ${POLL_INTERVAL_MS:-30000}
   # Constant floor on house consumption that's always safely drawn regardless
-  # of solar (fridge compressor, routers, etc). 0 unless you know better -
-  # only raise it to a value the house never dips below.
-  HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-0}
-  # Below this SOC, a gated device charges at minimum rate regardless of
-  # solar/the allocator - the AC cutoff must never fully drain a battery powering
-  # something that can't lose power (e.g. an actual refrigerator).
-  GATED_CRITICAL_SOC_PERCENT: &GATED_CRITICAL_SOC_PERCENT ${GATED_CRITICAL_SOC_PERCENT:-6}
-  # Once forced on above, stays on until SOC reaches this higher threshold -
-  # the gap avoids flipping the plug on/off every cycle near the critical line.
-  GATED_RECOVERY_SOC_PERCENT: &GATED_RECOVERY_SOC_PERCENT ${GATED_RECOVERY_SOC_PERCENT:-20}
+  # of solar. Set it below what the house really draws: while charging, the
+  # grid draw settles at exactly `house - this`, so the gap is the operating
+  # bias. Too high and the allocator reserves solar the house won't take and
+  # the remainder backfeeds. Measured at 99W here (see README); 70 buys about
+  # 29W continuously in exchange for never exporting. chargeLimitMin has to
+  # move with this - it is `house - this`.
+  HOUSE_STANDBY_WATTS: &HOUSE_STANDBY_WATTS ${HOUSE_STANDBY_WATTS:-70}
+  # Below this SOC a gated device stops running off its own battery: its plug
+  # closes and it feeds its load from AC in passthrough instead. The AC cutoff
+  # must never fully drain a battery powering something that can't lose power
+  # (e.g. an actual refrigerator). This doesn't charge it - passthrough holds
+  # SOC level - it only stops the drain. Set to the devices' own cutoff, so
+  # no capacity is held back above it - backup reserve isn't a goal here.
+  #
+  # These tuning values live here rather than in .env deliberately: .env is
+  # git-ignored, so a value pinned there silently wins over whatever the repo
+  # says and nothing catches the drift. .env holds credentials only.
+  GATED_DISCHARGE_FLOOR_SOC_PERCENT: &GATED_DISCHARGE_FLOOR_SOC_PERCENT ${GATED_DISCHARGE_FLOOR_SOC_PERCENT:-6}
 
   # No "internal" tier here: the Anker cloud API base URL and the state file
   # path are fixed implementation details (a constant endpoint, and a path
