@@ -1,7 +1,12 @@
 import { BatteryDriver, Result } from "@soltrk/core";
 import { AnkerDevice, AnkerError, getBindDevices, getUserMqttInfo, login } from "./http-api";
 import { AnkerMqttSession } from "./mqtt-session";
-import { encodeRealtimeTrigger, encodeSetChargeLimit } from "./protocol";
+import {
+  encodeRealtimeTrigger,
+  encodeSetChargeLimit,
+  encodeSetUsageMode,
+  PpsUsageMode,
+} from "./protocol";
 
 const REALTIME_TRIGGER_TIMEOUT_SEC = 300;
 // Fallback wait for failures we can't parse a specific retry window out of
@@ -112,7 +117,7 @@ export const NativeAnkerClient = (props: { email: string; password: string; coun
     };
   };
 
-  const setChargeLimit: BatteryDriver["setChargeLimit"] = async (sn, watts) => {
+  const setChargeLimit: BatteryDriver["setChargeLimit"] = async (sn, watts, mode) => {
     if (!initialized) return new Error(`[anker:${sn}] not initialized yet`);
     const device = devicesBySn.get(sn);
     if (!device || !mqttSession) {
@@ -121,15 +126,29 @@ export const NativeAnkerClient = (props: { email: string; password: string; coun
       return new Error(message);
     }
     try {
-      // watts=0 is the "stop charging" signal for deprioritized devices,
-      // but this alone doesn't guarantee it stops on real hardware: the
-      // device's own TOU schedule is a separate layer that can keep
-      // charging from AC regardless of what's requested here (see README).
+      // Charging is gated by the device's usage mode before the requested
+      // wattage matters at all: every unit here is deliberately left with an
+      // all-day MID_PEAK TOU schedule stored on it, so while it's in
+      // TIME_OF_USE it passes AC straight through to its own load and
+      // charges nothing (measured: AC in exactly equals AC out, none of the
+      // ~33W conversion overhead). STANDARD is what makes it honor
+      // setChargeLimit again.
+      //
+      // Sent every cycle rather than only on change, deliberately: the
+      // device drops out of TIME_OF_USE back to STANDARD on its own whenever
+      // it loses grid or Wi-Fi ("TOUモードを終了しました" in the app), so any
+      // cached "already in the right mode" belief goes stale the moment a
+      // gated device's plug cuts AC. Publishing is cheap; guessing is not.
+      const usageMode = mode === "passthrough" ? PpsUsageMode.TIME_OF_USE : PpsUsageMode.STANDARD;
+      await mqttSession.publishCommand(device, encodeSetUsageMode(usageMode));
+      if (mode === "passthrough") return "passthrough";
       await mqttSession.publishCommand(device, encodeSetChargeLimit(watts));
-      return undefined;
+      // There's no plug here to cut AC with, so "battery" isn't something
+      // this adapter can actually carry out - it charges either way.
+      return "charge";
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      console.error(`[anker:${sn}] set-charge-limit(${watts}) failed:`, error.message);
+      console.error(`[anker:${sn}] set-charge-limit(${watts}, ${mode ?? "-"}) failed:`, error.message);
       return error;
     }
   };

@@ -58,8 +58,8 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   There's no fixed charge order between units - every cycle, each
   not-yet-full unit is evaluated as the hypothetical *active* charging
   target: charge at the current solar output *minus whatever the other
-  units are already measured to be drawing* (their critical-SOC rescue
-  charging, or a full unit's passthrough - see below) *minus that unit's own
+  units are already measured to be drawing* (their passthrough draw, or a
+  full unit's - see below) *minus that unit's own
   measured household load* (`acOutputWatts`, known up front regardless of
   whether its AC input is on) *minus a fixed ~33W conversion overhead*,
   capped at the hardware max (1200W). Whichever feasible unit leaves the
@@ -68,20 +68,53 @@ control loop, and it's the one you `docker compose up -d soltrk`.
   100% quickly and hands the turn to the next-best unit on its own, so there's
   no need to separately track fairness or ordering. A unit that must never be
   allowed to run dry (e.g. one powering an actual refrigerator) is protected
-  by the critical-SOC rescue below, not by charging order. No gradual
+  by the discharge floor below, not by charging order. No gradual
   ramp-up: an earlier version ramped the request, but once it's capped at
   actual solar the ramp just added lag, and real solar changes gradually
   enough on its own (observed: roughly an hour from 0 to peak in the
   morning). Every non-active unit idles at the hardware's minimum request
   (100W - there's no real "0W/off", see below);
-  whether it's actually *connected* to AC is a separate per-unit decision:
-  the active unit and any full (100% SOC) unit stay connected while solar
-  is sufficient - a full unit doesn't charge, but with AC present it passes
-  solar straight through to its own load instead of draining its battery,
-  which avoids both the 99⇄100% plug-flapping a cut-off full unit would
-  cycle through and the double conversion loss of going via the battery -
-  everything else is disconnected (see the smart-plug section under
-  One-time setup).
+  whether it's actually *connected* to AC is a separate per-unit decision.
+  **Solar covers household loads before it charges anything**: while there's
+  any solar, units are connected emptiest battery first for as long as the
+  budget lasts, so when there isn't enough to go round the units with the
+  least charge to spare are the last to be left on their own batteries - and
+  a full one is the first, having the most to spare. A unit measuring no
+  load is connected too: it draws nothing and costs no budget, and its load
+  is only zero until someone switches something on, which a unit already on
+  AC covers from the first watt instead of discharging until the next poll
+  notices. Everything the budget doesn't reach is disconnected and runs off
+  its own battery (see the smart-plug section under One-time setup).
+
+  Covering loads first costs the charger nothing in net terms - the watts it
+  gives up are watts the other units would otherwise have pulled out of
+  their own batteries - while avoiding a whole discharge/recharge round trip
+  of conversion loss and cycle wear. Taken to its conclusion, **charging
+  never happens while some unit is still on its battery**: the budget a unit
+  has to see before it's connected is
+  `min(its load, minSolarToChargeWatts)`.
+
+  That threshold reads most easily as a **buffer zone**. Solar below it
+  can't start a charge, so it is simply absorbed
+  by the house and never has to be accounted for. Budget *above* that line
+  is the part with somewhere else to go, and letting a load take it beats
+  charging with it: covering costs `load - surplus`, charging instead costs
+  `load - (surplus - overhead) x dischargeEfficiency`, which is worse for
+  any values of the two. So a load bigger than the budget still connects,
+  importing the shortfall, as long as there was chargeable budget to spend.
+  Once the budget is down in the buffer zone there's no charge left to
+  displace, and only a load that genuinely fits is worth connecting.
+
+  Connecting a load inside that buffer zone is never a loss, which is why
+  it's still done. If the house is drawing more than the solar, the two
+  options come out identical: connecting imports the load but leaves the
+  battery alone, not connecting imports less but drains the battery by the
+  same amount, and that drain has to be bought back later. If the house is
+  drawing less, connecting wins outright - the grid bill is unchanged, but
+  not connecting spills the surplus while draining a battery for no reason.
+  Since `HOUSE_STANDBY_WATTS` is only a floor and real house consumption
+  isn't measured, there's no telling which case is in effect, so the
+  behaviour that ties in one and wins in the other is the one to pick.
 
 ### Reverse engineering a new command
 
@@ -109,9 +142,22 @@ other captured command - the real write happens through a cloud HTTP
 endpoint the app calls, and the cloud relays this MQTT message as a
 downstream *notification* afterward, not as the authoritative write itself.
 Replaying only the MQTT side isn't enough for commands like this; that
-endpoint hasn't been found (checked the `anker-solix-api` project's
-Solarbank-2-equivalent, `schedule.py`'s `set_sb2_use_time` - different
-device class, and explicitly marked unimplemented there too).
+endpoint has never been found.
+
+The lesson learned working around that, though, is worth repeating when a
+command seems cloud-only: **a captured message is not necessarily one
+command.** Msgtype `0x0090` turned out to carry three separate commands
+distinguished only by which TLV fields are present, and while the schedule
+write among them really is cloud-gated, the usage mode sharing the same
+message type is not - sending a deliberately *smaller* subset of the
+captured message's fields (`encodeSetUsageMode`, field `a2` only) works over
+plain MQTT and was enough to get the behaviour we actually wanted. Before
+concluding a message type is unusable, check whether some subset of its
+fields is a command in its own right; cross-checking against
+[`anker-solix-api`](https://github.com/thomluther/anker-solix-api)'s
+`mqttmap.py` / `mqttcmdmap.py` (which model exactly this
+one-message-type-many-commands structure, and mark the cloud-only ones) is
+the fastest way to find out.
 
 This is a best-effort control loop built on an unofficial, hand-decoded
 protocol, minimizing backfeed rather than a certified zero-export
@@ -129,16 +175,242 @@ combined peak) any such backfeed is expected to be small and brief - this
 is a deliberate trade-off against needless grid draw, not an oversight, but
 skip the disclaimers only if you understand it.
 
+### Lossless passthrough via TOU MID_PEAK
+
+Each unit has three distinct AC states, not two (`AcMode` in
+`packages/core/src/battery/battery-driver.ts`):
+
+| state | smart plug | usage mode | effect |
+| --- | --- | --- | --- |
+| `charge` | closed | `STANDARD` | charges at the requested wattage, +~33W overhead |
+| `passthrough` | closed | `TIME_OF_USE` | feeds its own load from AC, **no charging, no overhead** |
+| `battery` | open | (n/a) | runs its own load off its battery |
+
+`passthrough` exists because charging is not free: measured on real
+hardware, `AC in - AC out - requested watts` is consistently ~25-33W, which
+is where `CHARGE_CONVERSION_OVERHEAD_WATTS` comes from. A unit that shouldn't
+charge right now, but also shouldn't drain its battery powering a fridge,
+wants neither `charge` nor `battery`.
+
+**Setup (manual, once per unit).** In the Anker app, set the unit's TOU
+schedule to a single all-day **MID_PEAK** period (00:00-24:00). All three
+units in this deployment are configured this way and left that way. This is
+the one step soltrk can't do itself - see below.
+
+**How soltrk drives it.** With that schedule stored on the device, the
+usage mode alone selects the behaviour, and *that* is settable over plain
+MQTT (`encodeSetUsageMode`, msgtype 0x0090 carrying only field `a2`):
+`TIME_OF_USE` follows the stored MID_PEAK schedule and charges nothing,
+`STANDARD` makes `setChargeLimit` effective again. Verified live on one
+unit, switching cleanly in both directions:
+
+```
+stored MID_PEAK :  in  90W / out 90W  -> difference   0W   (passthrough)
+sent STANDARD   :  in 162W / out 96W  -> difference +65W   (charging resumed)
+sent TIME_OF_USE:  in  90W / out 90W  -> difference   0W   (back to passthrough)
+```
+
+**Why only field `a2` works.** Msgtype 0x0090 is a group of three commands
+sharing one message, distinguished by which fields are present. Field `a2`
+alone is the usage mode and goes over MQTT normally. Fields `a2`+`a3`+`a4`+
+`a6`+`a7` together are the *schedule* write, and `a7` (the schedule itself,
+encoded `(tariff(1=Peak, 2=Mid, 3=Off), start_hr, end_hr)` per slot) only
+takes effect through an Anker cloud HTTP endpoint that has never been
+identified - the app calls that endpoint, and the MQTT message we can see is
+just the cloud relaying it downstream afterward. That's why
+`encodeSetTouSchedule` in `protocol.ts` is decoded and byte-exact against
+real captures yet does nothing when we publish it, while `encodeSetUsageMode`
+works: the former includes `a7`, the latter deliberately doesn't. The
+upstream [`anker-solix-api`](https://github.com/thomluther/anker-solix-api)
+project's command map reaches the same conclusion independently, annotating
+its `pps_tou_schedule` as a cloud command and leaving it disabled, while
+enabling `pps_usage_mode` for this model.
+
+**The mode is not sticky.** A unit drops out of `TIME_OF_USE` back to
+`STANDARD` by itself whenever it loses grid power or Wi-Fi - the app says so
+explicitly ("TOUモードを終了しました … 電力モードは[標準モード]に切り替わり
+ました"). Since a gated unit loses grid power every time its plug opens, the
+usage mode is re-sent every cycle rather than cached, exactly like the
+wattage command.
+
+**Consequence for the discharge floor.** The floor in `GatedBatteryDriver`
+switches a unit to `passthrough`, not `charge`: its job is to stop a battery
+draining, and passthrough does that by powering the unit's load from AC
+directly - without buying grid power to push into a battery, and without
+paying the conversion overhead to do it. A unit below the floor therefore
+holds its SOC steady rather than climbing; refilling it is left to the
+allocator once there's solar to do it with. The floor never downgrades a
+unit the allocator already picked to charge.
+
+**What the old forced-charge rescue actually cost**, measured off the logs
+rather than modelled. Summing `acInput - acOutput` across every device over
+the 67 hours of the recorded window with no solar to speak of (under 30W),
+the rescue bought **5.31 kWh from the grid and pushed it into batteries at
+night**. 2.35 kWh of that - 44% - was the conversion overhead, burned
+without ever reaching a cell; the 2.96 kWh that did get stored comes back
+at about 90%. Net waste around 2.65 kWh over five days, roughly 6,000 yen a
+year at 31 yen/kWh, which independently reproduces the figure the replay
+simulation had estimated. A representative moment: 冷蔵庫 at 7% drawing
+208W in against 125W out, the 83W difference being `chargeLimitMin` (50W at
+the time) plus the 33W overhead exactly. Under passthrough the same
+situation reads 125W in against 125W out, and the charging simply doesn't
+happen.
+
 ## Known caveats
 
-- **100W floor**: below ~100W of solar (e.g. dawn/dusk), the charger can't
-  be throttled proportionally. `MIN_SOLAR_TO_CHARGE_WATTS` (default 150W) is
-  the cutoff below which we stop trying and just let panel output do
-  whatever it does. If you know a constant amount of house load is always
-  present (fridge compressor, routers, etc), set `HOUSE_STANDBY_WATTS` to it
-  - that much of solar is treated as already spoken for and doesn't need
-  covering by the charger. Leave at `0` (default) if unsure; setting it too
-  high is what could actually cause backfeed.
+- **Small charges are inefficient, but they beat the alternative here.** The
+  ~33W conversion overhead is near enough fixed whatever the rate, so
+  charging at 50W costs 83W to deliver (60% efficient, ~54% once the
+  discharge loss is counted), against 75% at 100W and 86% at 200W. That
+  looks like a reason to refuse small charges, and it was read that way for
+  a while - `chargeLimitMin` sat at 100W on the grounds that surplus which
+  doesn't charge is absorbed by the house at 1:1, which beats storing it at
+  60%.
+
+  **That only holds if the house actually absorbs it.** There is no export
+  contract on this installation, so surplus the house doesn't take is
+  handed to the grid for nothing. Against 0%, a 34%-efficient charge wins.
+  The comparison to make is therefore not "60% versus 100%" but "60% versus
+  nothing", and it comes out as: charge whenever the surplus exceeds the
+  overhead. Storing `W` watts costs `W + 33` and returns `0.9W`, so with
+  surplus `S` the gain is `0.9W` when `S >= W + 33` (free) and `S - 33 -
+  0.1W` when it isn't (still positive for any sane `W` once `S` clears
+  ~35W).
+
+  So `chargeLimitMin` is set to 20W, and it is a policy floor rather than a
+  hardware one - the app's own slider stops at 100W, but a live test took
+  the API down to 1W and found sub-100W requests scale the real charge
+  current proportionally. It also sets the solar needed before charging
+  starts at all (`minSolarToChargeWatts()` in `allocator.ts`: this plus the
+  33W overhead, with household loads and `HOUSE_STANDBY_WATTS` on top), so
+  raising it doesn't merely make charges more efficient - it widens the band
+  of generation that is exported for nothing. At 100W that band was 133W
+  wide. Observed live on 2026-08-30: 236W of generation against 100W of
+  house and 81W of unit loads, so 55W going to the grid unpaid, while the
+  threshold sat at 294W and nothing charged.
+
+  That threshold is derived rather than configured, because the two move
+  together by definition. When it *was* a separate setting, lowering
+  `chargeLimitMin` left it stranded at the old value and solar that could
+  have been charged with went unused until someone noticed.
+
+  `HOUSE_STANDBY_WATTS` is that constant house load - the part soltrk never
+  sees, since it only meters what's behind the battery units. That much of
+  solar is treated as already spoken for and doesn't need covering by the
+  charger. What's wanted is the floor the house *never* dips below, not its
+  average, so only loads that genuinely never switch off count; lighting
+  doesn't, however reliably it gets used. Leave at `0` (default) if unsure;
+  setting it too high is what could actually cause backfeed.
+
+  **Measuring it without a meter.** The electricity retailer's own app
+  (Octopus here) plots smart-meter consumption per hour, and any day the
+  house was empty reads out the floor directly. Two such days:
+
+  - 2026-02-12, before the batteries: 1.60 kWh total, with bars at 0.10
+    kWh/h from 00:00-07:00 and 16:00-23:00 and *nothing at all* from
+    08:00-15:00. 16 bars x 0.10 = 1.60 exactly.
+  - 2026-07-08, batteries in service, every unit on battery all day: 2.90
+    kWh, 0.10 kWh/h essentially flat across the whole 24h, rising to 0.20
+    for the last two hours.
+
+  So the floor is **100W**, about 2.4 kWh/day, against the 30W it had been
+  guessed at. The setting is 80 rather than 100, deliberately a little under
+  the measurement: the error directions aren't symmetric. Set it above the
+  true floor and the allocator reserves solar the house won't actually take,
+  and the remainder backfeeds. Set it below and it asks for a slightly
+  larger charge than solar covers, which the house absorbs and the grid tops
+  up - no export, and the only cost is the round-trip loss on those few
+  watts. So the margin belongs on the low side. Taken to its conclusion that
+  argues for lower still (in the replay, export over the period was 0.25 kWh
+  at 30W against 0.56 at 80W and 0.76 at 100W), but every one of these
+  differences is on the order of a yen a day, so the value is chosen to
+  state the truth with a margin rather than to win a rounding error.
+
+  Note that 100W is far more than
+  the three 24h ventilation fans and three air purifiers it was assumed to
+  be (those are a few watts and 5-15W each); 50-70W of it is unaccounted
+  for, and finding it is worth more than anything the allocator does - 100W
+  standing is about 33,000 yen a year, against the roughly 5,900 the whole
+  passthrough rework saves.
+
+  **The better method: subtract what soltrk already meters.** Waiting for an
+  empty house isn't necessary. Overnight there is no solar, and every gated
+  unit in passthrough reports its own AC draw, so the house is just the
+  meter reading minus the sum of those - and the sleeping hours give the
+  cleanest read, before anyone is up to add anything. For the night of
+  2026-08-29/30 the meter sat flat at 200W from 00:30 onward while soltrk's
+  three units averaged 101W across 01:00-07:00, putting the house at
+  **99W**. That independently reproduces the 100W the empty-day charts gave,
+  and it can be repeated on any night without arranging anything.
+
+  It also shows up things a daily total would hide: the 00:00-00:30 bucket
+  read 400W, 200W above the rest of the night, so something runs until
+  half past midnight. Small in itself (0.1 kWh) but about 1,100 yen a year
+  if it is nightly.
+
+  Two cautions on reading these charts. **Check the bucket width before
+  dividing, and don't assume it's the same everywhere** - the mobile app
+  plots hourly and the web portal half-hourly, so the same 0.1 bar means
+  100W in one and 200W in the other. The total settles it: on 2026-08-30 the
+  web view showed 1.9 kWh with bars from 00:00 to 09:00, which needs 18
+  half-hour buckets (0.2 + 17 x 0.1); hourly would only reach 1.1. The Feb
+  12 mobile screenshot went the other way - 16 bars evenly spaced 35px apart
+  with a 313px gap, so 24 slots of which 8 are empty, and 16 x 0.10 = 1.60
+  exactly. And an empty-day reading is only the floor when *no* solar is
+  reaching the house: the Feb 12 daytime bars are absent precisely because
+  solar cancelled the house load outright, which is what makes the night
+  hours the ones to use.
+
+  Replaying 5.5 days of recorded profile through 0/15/30/50/80/110W showed
+  everything from 0 to 50W landing within +-0.2 kWh of each other over the
+  whole period - about 1 yen a day, and non-monotonic, so that window is
+  noise rather than a curve with an optimum in it. Only 80W and above lost
+  clearly, by holding back solar that then got exported for nothing (0.33 to
+  1.89 kWh over the period, against 0.13 to 0.82 at 30W). That sweep is why
+  the value isn't worth tuning - but it also assumed a constant house draw,
+  which penalises high settings by exporting everything above it, so it
+  argues for setting the measured floor rather than against it. Note the
+  recorded period was overcast throughout and rarely had surplus, which is
+  exactly when this setting does the least - a sunny stretch would separate
+  the options more.
+- **The microinverters are on the house circuit, not behind the plugs** -
+  worth stating because the opposite would matter enormously, and one
+  reading of the meter data suggested it. The two empty-house days don't
+  agree: on 2026-02-12, before the batteries, the meter read *zero* for
+  eight straight midday hours as solar cancelled the house load outright,
+  while on 2026-07-08, with the batteries in service and every unit on
+  `battery`, it read the full 100W right through midday in July. That is
+  what you would see if the microinverters sat downstream of the smart
+  plugs: open every plug and their output has nowhere to go, a grid-tied
+  inverter shuts down for want of a voltage reference, and all generation is
+  lost. `battery` would then not be the neutral "run on your own cells"
+  state the allocator models, but also a decision to discard whatever is
+  being generated.
+
+  The wiring has since been confirmed directly - the microinverters plug
+  into the house circuit - and the history says the same thing without
+  anyone tracing a cable. Across the recorded window there are 94 daylight
+  cycles where every device's AC input was zero, so every gated plug open,
+  several with two units visibly running loads off their own batteries, and
+  the microinverters went on reporting 100W to 532W throughout. They cannot
+  have been isolated. Worth keeping as a worked example: a meter chart alone
+  was enough to suggest a serious design fault, and the telemetry already
+  in hand settled it at no cost. Whatever explains the 2026-07-08 chart it
+  isn't the wiring; a washout is the likeliest answer, and that day predates
+  the recorded history.
+- **A plug can be switched by something other than soltrk.** The Tuya Smart
+  Life app keeps its own automations and scenes, and any left over from
+  before a plug was wired into soltrk will keep firing - turning the plug on
+  independently of the control loop, with nothing in soltrk's logs, because
+  soltrk never issued the command. Observed live: a gated unit drew AC for
+  hours while the loop believed its plug was open, and it recurred until the
+  stray rule was deleted in the app.
+
+  This looks similar to the LAN flakiness below, so check the app's
+  Automation/Scene tab for rules involving the plug before spending time on
+  the flaky-command explanation. It can't be fixed from soltrk - the rule
+  lives on Tuya's cloud side.
+
 - **The requested wattage is a rough dial, not a precise one.** Real
   hardware doesn't reliably obey a specific requested wattage - a 100W
   request was observed drawing 137W on real hardware. `soltrk` treats the
@@ -156,16 +428,8 @@ skip the disclaimers only if you understand it.
   and this was seen with the unit already in **標準モード (Standard mode)**,
   not just under a TOU (Time of Use) "オフピーク" schedule as originally
   suspected - so this isn't a TOU-specific quirk, it's a general limit of
-  the wattage command itself, in any mode. Dynamic TOU control from soltrk
-  was also explored and abandoned: the schedule-change command was reverse
-  engineered (`encodeSetTouSchedule` in `protocol.ts`) but replaying it
-  directly over MQTT doesn't take effect, because the real write goes
-  through an unidentified Anker cloud HTTP endpoint, not the MQTT message
-  alone (see "Reverse engineering a new command" below). Since neither the
-  wattage command nor TOU can be driven reliably from software in any mode,
-  the practical fix is the physical smart-plug AC cutoff described in
-  "One-time setup" step 6, which sidesteps this entirely - all 3 of this
-  deployment's units are gated this way and run in 標準モード.
+  the wattage command itself, in any mode. What *does* stop charging outright
+  is the usage mode, see "Lossless passthrough via TOU MID_PEAK" below.
 - **Hand-decoded protocol, single device model.** Only A1765 (SOLIX C1000X
   Gen 2) has a decoder/encoder (`packages/anker/src/protocol.ts`); there is
   no upstream reference for this model's wire format at all, read or write,
@@ -230,8 +494,19 @@ secrets-heavy the way Tuya's numbered keys were) - declared in the `x-env`
 block at the top of `docker-compose.yml` (required ones as bare `${VAR}`,
 optional ones with a `${VAR:-default}` fallback), which is the source of
 truth for what exists and its default, not a separate `.env.example`.
-Create a git-ignored `.env` next to it with at least `ANKER_EMAIL` and
+Create a git-ignored `.env` next to it with `ANKER_EMAIL` and
 `ANKER_PASSWORD`.
+
+**Put credentials in `.env` and nothing else.** Tuning values
+(`HOUSE_STANDBY_WATTS`, `GATED_DISCHARGE_FLOOR_SOC_PERCENT`, …) belong in
+`docker-compose.yml`'s defaults, where they are version-controlled and
+travel with the code. A value pinned in `.env` silently overrides whatever
+the repo says, and because `.env` is git-ignored nothing catches the drift:
+this bit once, when the floor was changed to 6% in the repo, deployed, and
+went on running at 10% because the Pi's `.env` still pinned it - with tests
+and type-checks passing throughout. `.env` on the Pi accumulated a dead
+`MIN_SOLAR_TO_CHARGE_WATTS` the same way, months after the code stopped
+reading it.
 
 To find your device serials:
 
@@ -316,21 +591,148 @@ cycle's active target, and restores it (plus still sending the normal
 wattage command for fine control) whenever it is - any sn with no matching
 plug entry is unaffected and behaves exactly like plain `"anker"`.
 
-**Safety floor:** a gated device can be cut off from AC for hours at a
+**Discharge floor:** a gated device can be cut off from AC for hours at a
 time (no solar, not this cycle's pick) with nothing else stopping its own
 battery from draining down to zero while it keeps powering whatever it's
-actually plugged into (e.g. a real refrigerator). At/below
-`GATED_CRITICAL_SOC_PERCENT` (default 6%), `GatedBatteryDriver` opens the
-gate and charges at whatever wattage it's given (normally the hardware's
-own minimum) regardless of solar availability or the allocator's own
-decision - this overrides everything else. It
-stays forced open until SOC climbs back up to the higher
-`GATED_RECOVERY_SOC_PERCENT` (default 20%), not the same 6% line - without
-that gap, a SOC sitting right at the critical threshold would flip the
-plug on/off every single poll cycle. This means `setChargeLimit` must run
-every cycle even when the requested wattage hasn't changed (the loop no
-longer skips "unchanged" calls, since a gated device's actual decision can
-depend on live SOC alone).
+actually plugged into (e.g. a real refrigerator). Below
+`GATED_DISCHARGE_FLOOR_SOC_PERCENT` (default 6%), `GatedBatteryDriver`
+stops letting it run on its battery: `battery` becomes `passthrough`, so
+the plug closes and its load is fed from AC instead.
+
+That is the entire override - it removes `battery` as an option, it does
+not pin the device to `passthrough`. `charge` still passes straight
+through, and is the only thing that raises the SOC again, since passthrough
+holds it level. So the sequence is: floor → passthrough (stop draining) →
+charge (SOC recovers, once there's solar) → discharging allowed again as
+soon as it's back above the floor.
+
+**An SOC that can't be read counts as below the floor.** The two ways of
+being wrong aren't symmetric: treating a full battery as empty costs one
+cycle of passthrough, which holds SOC level and buys only the device's own
+load off the grid, while treating an empty one as fine leaves the cutoff
+open and keeps discharging it with no reading left to stop it.
+
+This matters more than it sounds, because status reads fail *often* - not
+only on the first cycle after a restart, but roughly every 20 minutes in
+normal running (8 times in a 2.5h window on 2026-08-29, per device). Under
+the earlier "defer to the allocator" behaviour each of those cycles handed
+the device back to its battery and physically opened its plug. Measured on
+a day with no solar and all three units already at the floor, 冷蔵庫 fell
+from 18% to 6% over 2.5 hours - about 51Wh/h - while nominally "held" in
+passthrough. After the change the same device sat at exactly 6% for 45
+consecutive cycles while drawing 74W, AC in equal to AC out. That is also
+the cleanest confirmation so far that passthrough really is level: the
+earlier drift was the plug being opened, not a leak in passthrough.
+
+**The units have a floor of their own**, set by hand in the Anker app (6%
+here), and it holds: across 23 recorded descents no device has ever gone
+below 6%. That protects the battery, not the load - reach it with the plug
+open and there is nothing left to power the fridge. So far that has never
+happened: on all 32 arrivals at 6-7% the gate closed and AC came back
+within one to six cycles, and the load was never interrupted. But the two
+floors sitting close together is what makes the margin worth sizing, and
+`GATED_DISCHARGE_FLOOR_SOC_PERCENT` is that margin.
+
+**Size it from the recorded descents, not from the nameplate capacity.**
+Dividing 1056Wh by the load overstates the margin by about half, because a
+SOC point is not worth 10.56Wh - measured across every discharge run in the
+history it delivers 7.4Wh on 冷蔵庫 and 6.3Wh on 事務室, and it gets worse
+the lower the SOC goes (8.7Wh/point in the 30-50% band against 5-6 near the
+bottom). In the 6-20% band where the margin actually lives it is 6.8Wh.
+The history contains the answer directly: eight recorded 20%→6% descents
+took 46 minutes at their fastest, 61 median, 115 at their slowest, under
+loads of 46-110W. So at 冷蔵庫's typical 78W:
+
+| floor | margin before the device's own 6% cutoff |
+|---|---|
+| 10% | 21 min |
+| 15% | 47 min |
+| 20% | 73 min |
+| 30% | 126 min |
+
+**But margin isn't free, and the setting here is 6% - no margin at all.**
+Everything between the floor and the device's own cutoff is capacity that
+never gets used: the unit stops discharging at the floor and takes its load
+off AC instead, so every point above 6% is energy bought from the grid
+rather than taken from a battery that already holds it. Across three units
+that is roughly 82Wh at 10% and 285Wh at 20%, about 2.5 and 9 yen a day.
+
+**Backup reserve is explicitly not a goal here** - this deployment is
+optimised for electricity cost, so the floor is sized only by what keeps
+the load powered while the loop is working, never by how many hours of
+outage runtime it would leave.
+
+**What the two floors each do, which is not what it looks like.** The
+devices' 6% is not a discharge cutoff. Left on their own batteries they go
+straight past it - 4% and 5% have both been recorded with the unit still
+delivering its load, which is the *right* behaviour for something powering
+a fridge. What the setting actually does is the other half: whenever AC is
+present the unit charges itself back up to 6%, unprompted. That has been
+seen many times, including a recovery from 2% at 89W over an hour. So the
+two responsibilities split cleanly, and neither side can take over the
+other's:
+
+| | stops the drain | restores the level |
+|---|---|---|
+| soltrk's floor | yes, by switching to passthrough | no |
+| the devices' 6% | no | yes, whenever AC is present |
+
+**Why the floor is set to the devices' own 6% rather than higher.** The
+obvious worry is that the SOC reading is not trustworthy down here, so
+tripping at a displayed 6% might mean acting at a real 2%. That happens -
+one unit went from a steady 6% to 2% in a single minute, which no 36W load
+can do and which is the gauge recalibrating rather than the pack draining.
+But it is self-correcting: the moment the floor engages, the unit is on AC,
+and topping itself back up to 6% is exactly what it then does. A higher
+floor would buy margin against an error the hardware already repairs.
+
+**And a higher floor would not save the energy it looks like it saves.**
+Parked at 6% the units draw noticeably more AC than they deliver on the
+cycle where the SOC reads 5% - 60 to 73W - then match exactly again. Over a
+10-hour night with all three parked there: 88 such top-ups, 104Wh, 10.3W
+continuous. That looks like a cost of sitting on the reserve, but it scales
+with load (5.7W at 73W, 3.7W at 37W, 0.8W at no load - 8 to 10% throughout),
+so it is the passthrough conversion loss, not a penalty for where the floor
+is. Above the reserve the same loss simply comes out of the battery instead,
+showing up as a slow SOC decline. The floor changes which side pays, not
+how much.
+
+**The top-ups stop once a unit has been charged up, which points at the
+gauge.** The night of 2026-08-30/31, 冷蔵庫 held 6% across 796 consecutive
+passthrough cycles with a 64W load and took **zero** top-ups, against 56 the
+night before. The one thing that had changed was that it reached 10% during
+the day. 事務室 only got as far as 7% and went on churning, 60 top-ups and
+92Wh. That fits the recalibration story: what triggers a top-up is the
+reading dipping to 5%, and a gauge with nothing to calibrate against
+flickers there while a freshly exercised one sits still. Getting the packs
+up occasionally is therefore worth more than the stored energy alone
+suggests.
+
+**A unit idling on its own battery drains even with no load at all.** Same
+night, キッチン went 13% to 6% - about 50Wh - while measuring 0W of load
+throughout, roughly half the night on battery and half in passthrough. That
+is the unit's own electronics. It matters for how the allocator's output is
+read: charging the device with no load looks like the efficient choice,
+since everything put in is stored rather than passing through to something,
+but it does not keep what it is given overnight either.
+
+There's deliberately no second, higher threshold to release at: the
+condition is just "is it above the floor", evaluated fresh from the current
+SOC each cycle, with no memory of which side it came from. Hysteresis would
+normally guard against flapping at the line, but there's little to flap
+here - passthrough holds SOC level rather than raising it, so a device that
+hits the floor stays put until something actually charges it, which only
+happens when there's solar to spare. An unreadable SOC leaves the
+allocator's own decision standing, since the floor is a claim about how
+empty the battery is and there's nothing to base it on.
+
+Passthrough rather than a forced charge is deliberate: it costs only the
+device's own load off the grid, with no ~33W conversion overhead and
+nothing bought to push into the battery.
+
+This means `setChargeLimit` must run every cycle even when the requested
+wattage hasn't changed (the loop no longer skips "unchanged" calls, since a
+gated device's actual decision can depend on live SOC alone).
 
 Confirmed live: with 冷蔵庫's TOU schedule set to "オフピーク" (which would
 otherwise keep charging from AC no matter what wattage is requested - see

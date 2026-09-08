@@ -9,15 +9,64 @@ type TrackedDevice = {
   connectedAt: number;
   lastWatts: number | undefined;
   lastUpdatedAt: number;
+  // Asks the device for a fresh reading. Assigned per device in connect(),
+  // where the config and client are in scope.
+  refresh?: () => Promise<void>;
+  // Set once its reading has gone stale enough to drop from the total, so
+  // the warning is printed on the transition rather than every cycle.
+  staleWarned?: boolean;
+  // Consecutive failed connect attempts, reset on success. Past
+  // FAILURES_BEFORE_NEW_CLIENT the client itself is replaced.
+  failedConnects: number;
 };
 
-// Used for zombie-connection detection (see the reconnect loop below) - a
-// tight window so a genuinely stuck socket gets kicked promptly.
-const STALE_AFTER_MS = 60_000;
+// How often to ask each device for its current reading. **These devices do
+// not push on their own** - that has to be said plainly, because the code
+// here used to assume they did and the assumption survived a long time by
+// looking exactly like a working one. There was no `get()` anywhere: the
+// only thing that ever produced a reading was the response to `connect()`.
+// With the stale threshold at 60s and the reconnect check every 30s, every
+// device was being torn down and reconnected roughly every 90 seconds, and
+// each reconnect fetched one value. The reconnect loop *was* the poller,
+// and the "90 second push cadence" measured off the logs was really the
+// reconnect cadence measuring itself.
+//
+// The tell came from raising the stale threshold to 210s to stop what
+// looked like needless reconnects: the reading interval immediately became
+// 214s. Readings tracked the threshold exactly, because they were caused by
+// it.
+//
+// So ask explicitly, and let the connection stay up. 30s matches the
+// control loop, so a cycle rarely acts on a figure more than one interval
+// old.
+const REFRESH_INTERVAL_MS = 30_000;
+// Zombie-connection detection, which only means anything now that something
+// is actually asking: four refreshes have gone unanswered on a connection
+// that still claims to be up.
+const STALE_AFTER_MS = 120_000;
 const RECONNECT_INTERVAL_MS = 30_000;
+// Retrying a wedged TuyAPI client never escapes on its own, so past this
+// many consecutive failures the client object is thrown away and rebuilt.
+// Six attempts at 30s is three minutes - long enough that a device merely
+// rebooting is not disturbed, short enough to beat the forty minutes
+// gtb800-2 was stuck for before a container restart cleared it.
+const FAILURES_BEFORE_NEW_CLIENT = 6;
 // How long to listen for the device's UDP broadcast before giving up on
 // resolving its current IP for this attempt (see tryConnect).
 const FIND_TIMEOUT_SEC = 10;
+
+// Observed live: a GTB-800 sitting in direct summer sun can suddenly report
+// almost exactly half its immediately-prior reading, then recover minutes
+// later - consistent with the panel's own thermal protection halving
+// output rather than a connectivity blip (which reads as 0/missing, not a
+// clean fraction). Only checked above THERMAL_WATCH_MIN_WATTS so dawn/dusk
+// noise near zero doesn't produce meaningless ratios. This can't distinguish
+// a real thermal event from a sudden cloud passing overhead - both look
+// like the same kind of drop - so treat the log line as "worth a look", not
+// a confirmed diagnosis.
+const THERMAL_HALVING_RATIO_MIN = 0.4;
+const THERMAL_HALVING_RATIO_MAX = 0.6;
+const THERMAL_WATCH_MIN_WATTS = 50;
 
 /**
  * Implements @soltrk/core's SolarSource port for the two GTB-800
@@ -48,44 +97,123 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
       await tracked.client.connect();
       tracked.connected = true;
       tracked.connectedAt = Date.now();
+      tracked.failedConnects = 0;
       console.log(`[tuya:${tracked.config.name}] connected`);
     } catch (err) {
+      tracked.failedConnects += 1;
       console.error(
         `[tuya:${tracked.config.name}] connect failed (will retry): ${(err as Error).message}`,
       );
+      // A TuyAPI client can get itself into a state that retrying never
+      // escapes: gtb800-2 spent forty minutes on 2026-09-01 failing every
+      // attempt with EHOSTUNREACH against an address it kept resolving to,
+      // and only a container restart cleared it - which discards the client
+      // object. Do that directly rather than needing a restart, since
+      // nothing above this layer can tell the difference between a panel
+      // that is genuinely off and one whose client is wedged.
+      if (tracked.failedConnects >= FAILURES_BEFORE_NEW_CLIENT) {
+        console.warn(
+          `[tuya:${tracked.config.name}] ${tracked.failedConnects} failed connects - ` +
+            `discarding the client and starting over`,
+        );
+        try {
+          tracked.client.disconnect();
+        } catch {
+          // Already unusable; nothing to salvage and nothing to report.
+        }
+        // TuyAPI extends EventEmitter at runtime but doesn't say so in its
+        // types. Worth detaching rather than leaving to GC: the old
+        // client's handlers close over `tracked`, so a late event from a
+        // client we have given up on would still write into it.
+        (tracked.client as unknown as { removeAllListeners: () => void }).removeAllListeners();
+        tracked.failedConnects = 0;
+        attachClient(tracked);
+      }
     }
+  };
+
+  // Builds a fresh TuyAPI client for a device and wires everything that
+  // depends on it. Called once at startup and again whenever the existing
+  // client has to be thrown away (see FAILURES_BEFORE_NEW_CLIENT).
+  const attachClient = (tracked: TrackedDevice): void => {
+    const cfg = tracked.config;
+    const client = new TuyAPI({ id: cfg.id, key: cfg.key, version: "3.3" });
+    tracked.client = client;
+
+    // Shared by both paths that can produce a reading: the reply to our
+      // own `get()`, and any unsolicited "data" the device happens to emit.
+      // Both are welcome; whichever arrives first wins and the other is a
+      // no-op, since an identical value re-applied changes nothing and its
+      // thermal ratio is 1.0.
+      const applyReading = (dps: Record<string, unknown> | undefined): void => {
+        const raw = dps?.[cfg.powerDp];
+        if (typeof raw !== "number") return;
+        const newWatts = raw / cfg.powerScale;
+        const prevWatts = tracked.lastWatts;
+        if (prevWatts !== undefined && prevWatts >= THERMAL_WATCH_MIN_WATTS) {
+          const ratio = newWatts / prevWatts;
+          if (ratio >= THERMAL_HALVING_RATIO_MIN && ratio <= THERMAL_HALVING_RATIO_MAX) {
+            console.warn(
+              `[tuya:${cfg.name}] output dropped to ${(ratio * 100).toFixed(0)}% of its previous ` +
+                `reading (${prevWatts.toFixed(1)}W -> ${newWatts.toFixed(1)}W) - possible thermal throttle`,
+            );
+          }
+        }
+        // The timestamp moves on every reading, the log line only when the
+        // value does: at a 30s refresh an unchanged figure is the common
+        // case and logging it would bury everything else.
+        const changed = newWatts !== prevWatts;
+        tracked.lastWatts = newWatts;
+        tracked.lastUpdatedAt = Date.now();
+        if (tracked.staleWarned) {
+          console.log(`[tuya:${cfg.name}] answering again - back in the total`);
+          tracked.staleWarned = false;
+        }
+        if (changed) console.log(`[tuya:${cfg.name}] ${newWatts.toFixed(1)}W`);
+      };
+      tracked.refresh = async (): Promise<void> => {
+        try {
+          const res = (await client.get({ schema: true })) as {
+            dps?: Record<string, unknown>;
+          };
+          applyReading(res?.dps);
+        } catch (err) {
+          // Left to the zombie check rather than reconnecting here: one
+          // failed request is not evidence the connection is gone, and
+          // tearing it down costs a reconnect before anything can be read.
+          console.error(`[tuya:${cfg.name}] refresh failed: ${(err as Error).message}`);
+        }
+      };
+
+    client.on("data", (data) => applyReading(data.dps));
+    client.on("error", (err) => {
+      console.error(`[tuya:${cfg.name}] error:`, err.message);
+    });
+    client.on("disconnected", () => {
+      tracked.connected = false;
+    });
   };
 
   const connect: IF["connect"] = async () => {
     for (const cfg of configs) {
-      const client = new TuyAPI({ id: cfg.id, key: cfg.key, version: "3.3" });
       const tracked: TrackedDevice = {
         config: cfg,
-        client,
+        client: undefined as unknown as TuyAPI,
         connected: false,
         connectedAt: 0,
         lastWatts: undefined,
         lastUpdatedAt: 0,
+        failedConnects: 0,
       };
-
-      client.on("data", (data) => {
-        const raw = data.dps?.[cfg.powerDp];
-        if (typeof raw === "number") {
-          tracked.lastWatts = raw / cfg.powerScale;
-          tracked.lastUpdatedAt = Date.now();
-          console.log(`[tuya:${cfg.name}] ${tracked.lastWatts.toFixed(1)}W`);
-        }
-      });
-      client.on("error", (err) => {
-        console.error(`[tuya:${cfg.name}] error:`, err.message);
-      });
-      client.on("disconnected", () => {
-        tracked.connected = false;
-      });
-
+      attachClient(tracked);
       devices.push(tracked);
       await tryConnect(tracked);
+      void tracked.refresh?.();
     }
+
+    setInterval(() => {
+      for (const d of devices) if (d.connected) void d.refresh?.();
+    }, REFRESH_INTERVAL_MS);
 
     setInterval(() => {
       const now = Date.now();
@@ -104,7 +232,8 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
           now - d.lastUpdatedAt >= STALE_AFTER_MS;
         if (zombie) {
           console.warn(
-            `[tuya:${d.config.name}] connected but no data for ${Math.round((now - d.lastUpdatedAt) / 1000)}s - forcing reconnect`,
+            `[tuya:${d.config.name}] no answer to ${Math.round(STALE_AFTER_MS / REFRESH_INTERVAL_MS)} refreshes ` +
+              `(${Math.round((now - d.lastUpdatedAt) / 1000)}s) - forcing reconnect`,
           );
           d.client.disconnect();
           d.connected = false;
@@ -128,10 +257,30 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
    * once so a permanently-unreachable panel is still visible somewhere,
    * even though it no longer affects the total once it has ever reported. */
   const getTotalWatts: IF["getTotalWatts"] = () => {
+    const now = Date.now();
     let total = 0;
     for (const d of devices) {
       if (d.lastWatts === undefined) {
         console.warn(`[tuya:${d.config.name}] no reading yet - excluding from total`);
+        continue;
+      }
+      // A device that has gone unreachable keeps its last value forever
+      // otherwise, and that value is worse than nothing. Seen live on
+      // 2026-09-01: gtb800-2 dropped off the network at 11:20 and its 72W
+      // went on being added to the total for the next forty minutes, so the
+      // allocator was sizing charges against generation that had stopped.
+      // Overnight it would be worse still - a panel that died in daylight
+      // freezes at its daytime figure, and the loop spends the night
+      // believing there is sun to charge with.
+      const ageMs = now - d.lastUpdatedAt;
+      if (ageMs > STALE_AFTER_MS) {
+        if (!d.staleWarned) {
+          console.warn(
+            `[tuya:${d.config.name}] last reading is ${Math.round(ageMs / 1000)}s old - ` +
+              `excluding ${d.lastWatts.toFixed(1)}W from the total until it answers again`,
+          );
+          d.staleWarned = true;
+        }
         continue;
       }
       total += d.lastWatts;

@@ -1,0 +1,15 @@
+{
+  "//": "Client-only. The root tsconfig includes packages/*/src, which picks up this package's Node server but deliberately not client/ - browser code needs the DOM lib and ES modules, and type-checking it as CommonJS Node would be wrong. Run it with `npx tsc -p packages/web` (vite build does not type-check).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["vite/client"]
+  },
+  "include": ["client"]
+}
