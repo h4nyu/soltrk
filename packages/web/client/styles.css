@@ -1,0 +1,74 @@
+:root {
+  --bg: #f7f7f5;
+  --panel: #ffffff;
+  --ink: #1b1c1e;
+  --muted: #6b7078;
+  --line: #e2e2df;
+  --solar: #e8a33d;
+  --import: #c1543f;
+  --export: #4a8f6d;
+  --soc: #4a7fb5;
+  --charge: #4a8f6d;
+  --passthrough: #8a8f98;
+  --battery: #c1543f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a;
+    --panel: #1e2024;
+    --ink: #e8e8e6;
+    --muted: #9298a1;
+    --line: #2c2f35;
+    --solar: #f0b757;
+    --import: #d96b55;
+    --export: #62ab86;
+    --soc: #6fa3d6;
+    --charge: #62ab86;
+    --passthrough: #7f858e;
+    --battery: #d96b55;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+header {
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+  position: sticky; top: 0; z-index: 2;
+}
+h1 { margin: 0; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; }
+nav { display: flex; gap: 4px; }
+nav button {
+  font: inherit; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+nav button[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+#updated { margin-left: auto; color: var(--muted); font-size: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 14px 18px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.card .k { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
+.card .s { color: var(--muted); font-size: 12px; }
+.pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; color: #fff; }
+.pill.charge { background: var(--charge); }
+.pill.passthrough { background: var(--passthrough); }
+.pill.battery { background: var(--battery); }
+main { padding: 0 18px 18px; display: grid; gap: 14px; }
+.chart { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 4px; overflow-x: auto; }
+.chart h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.chart p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.modes { display: grid; gap: 6px; }
+.moderow { display: flex; align-items: center; padding-right: var(--pad-right, 0); }
+/* Width is the charts' y-axis gutter, which is narrower than some device
+   names - let them keep their line and sit flush against the band. */
+.moderow .nm { width: var(--pad-left, 64px); padding-right: 8px; color: var(--muted); font-size: 11px; flex: none; text-align: right; white-space: nowrap; overflow: visible; }
+.moderow canvas { flex: 1; height: 16px; border-radius: 3px; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+footer { padding: 0 18px 24px; color: var(--muted); font-size: 12px; }
+.uplot { font-family: inherit !important; }

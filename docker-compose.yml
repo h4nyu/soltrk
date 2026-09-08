@@ -80,3 +80,36 @@ services:
     <<: *app
     command: ["npx", "tsx", "packages/cli/src/index.ts", "run"]
     restart: unless-stopped
+
+  # Read-only dashboard over the loop's own output (data/state.json and
+  # data/history.jsonl). Same image as the services above with a different
+  # command - packages/web is already inside it, both COPY'd at build time and
+  # bind-mounted at runtime, so it needs no image of its own.
+  #
+  # The browser bundle in packages/web/dist is built by `make web-build`,
+  # which runs vite in a throwaway `app` container - see the Makefile.
+  #
+  # Written out rather than merging `*app` on purpose: that anchor carries
+  # `build: .`, and inheriting it would let `up -d --build web` rebuild the
+  # control loop's image behind your back. With no build section here, nothing
+  # done to this service can touch it. Run `webbuild` above after a UI change,
+  # then `docker compose up -d web` - never `--build`.
+  #
+  # It also takes none of *env: the dashboard has no business holding the Anker
+  # credentials, and ./data is mounted read-only since it only ever reads.
+  web:
+    image: soltrk:latest
+    environment:
+      WEB_PORT: ${WEB_PORT:-8080}
+      # How much history is held in memory for the charts. The file is
+      # append-only and grows about 1MB/day, so this bounds the Pi's RAM use
+      # rather than the file itself.
+      WEB_RETENTION_DAYS: ${WEB_RETENTION_DAYS:-30}
+    volumes:
+      - ./data:/app/data:ro
+      - ./packages:/app/packages
+    command: ["npx", "tsx", "packages/web/src/index.ts"]
+    # Same reason as the services above, plus it puts the dashboard on the Pi's
+    # LAN address directly: http://192.168.1.34:8080
+    network_mode: host
+    restart: unless-stopped
