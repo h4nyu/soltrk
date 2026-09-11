@@ -7,7 +7,9 @@ import { captureMqtt, getBindDevices, login } from "@soltrk/anker";
 import { discover, SolarSource as TuyaSolarSource } from "@soltrk/tuya";
 import { loadConfig } from "./config";
 import { getDriver } from "./battery/registry";
-import { pinoCycleRecorder } from "./history";
+import { pinoCycleRecorder, resolvedTimeZone } from "./history";
+import { runScheduler } from "./schedule";
+import { summarize } from "./summary";
 import { printStatus } from "./status";
 
 const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
@@ -34,6 +36,7 @@ program
   .description("Start the control loop: read solar output and set battery charge limits")
   .action(() => {
     const config = loadConfig();
+    console.log(`[history] day boundaries in ${resolvedTimeZone()}`);
     runLoop({
       solar: TuyaSolarSource({ configs: config.tuyaDevices }),
       getDriver,
@@ -47,6 +50,46 @@ program
       console.error(err);
       process.exit(1);
     });
+  });
+
+program
+  .command("summarize")
+  .description("Roll completed daily history files into per-month summaries, then delete raw days already summarised and past the retention window")
+  .option("--data-dir <path>", "directory holding the history files", "./data")
+  .option("--retention-days <days>", "keep raw daily files at least this long", "60")
+  .action(async (opts: { dataDir: string; retentionDays: string }) => {
+    // Safe to run against a live loop: the day currently being written is
+    // never read or deleted, and re-running folds nothing twice.
+    const res = await summarize({
+      dataDir: opts.dataDir,
+      retentionDays: Number(opts.retentionDays),
+    });
+    console.log(`[summarize] day boundaries in ${res.timeZone}`);
+    if (res.skippedToday) console.log(`[summarize] ${res.skippedToday} still being written - left alone`);
+    for (const f of res.folded)
+      console.log(`[summarize] ${f.source} -> ${f.months.join(", ")} (${f.records} cycles)`);
+    if (res.folded.length === 0) console.log("[summarize] nothing new to fold");
+    for (const d of res.deleted) console.log(`[summarize] deleted ${d}`);
+    if (res.deleted.length === 0) console.log("[summarize] nothing old enough to delete");
+  });
+
+program
+  .command("schedule")
+  .description("Run summarize on a recurring schedule; the `scheduler` compose service runs this")
+  .option("--data-dir <path>", "directory holding the history files", "./data")
+  .option("--retention-days <days>", "keep raw daily files at least this long", process.env.SUMMARIZE_RETENTION_DAYS ?? "60")
+  .option("--cron <expr>", "when to roll up", process.env.SUMMARIZE_CRON ?? "0 3 * * *")
+  .action((opts: { dataDir: string; retentionDays: string; cron: string }) => {
+    const job = runScheduler({
+      dataDir: opts.dataDir,
+      retentionDays: Number(opts.retentionDays),
+      cron: opts.cron,
+    });
+    if (Result.isErr(job)) {
+      console.error(`[schedule] ${job.message}`);
+      process.exit(1);
+    }
+    // Nothing else to do: node-schedule's timer keeps the process alive.
   });
 
 program
