@@ -1,16 +1,18 @@
-import { open, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { DeviceMeta, MODES, Series, SeriesBuilder } from "./buckets";
 
 /**
- * The shape of one line in data/history.jsonl.
+ * The shape of one line in a history log.
  *
  * Every field past `timestamp` is optional on purpose. This is an append-only
  * log whose schema has already drifted once - the oldest records carry a
- * `priority` number and no `batterySoc`, `mode` or `acOutputWatts`, because
- * those were added to the control loop later. A viewer of such a log must
- * read what is there rather than what the current writer happens to emit,
- * which is also why this package deliberately does not import the live
- * `StateSnapshot` type from @soltrk/core: sharing it would make every future
- * change to the loop's snapshot silently reinterpret months of old records.
+ * `priority` and no `batterySoc`, `mode` or `acOutputWatts`, because those were
+ * added to the control loop later. A viewer of such a log must read what is
+ * there rather than what the current writer happens to emit, which is also why
+ * this package deliberately does not import the live `StateSnapshot` type from
+ * @soltrk/core: sharing it would make every future change to the loop's
+ * snapshot silently reinterpret months of old records.
  */
 type DeviceRecord = {
   sn?: string;
@@ -19,7 +21,6 @@ type DeviceRecord = {
   acInputWatts?: number;
   acOutputWatts?: number;
   targetWatts?: number;
-  acOn?: boolean;
   mode?: string;
 };
 
@@ -32,78 +33,58 @@ type CycleRecord = {
   devices?: DeviceRecord[];
 };
 
-/** One parsed cycle, flattened. Device values are indexed by device order. */
-type Sample = {
-  t: number;
-  solar?: number;
-  acIn?: number;
-  acOut?: number;
-  balance?: number;
-  soc: (number | undefined)[];
-  devAcIn: (number | undefined)[];
-  devAcOut: (number | undefined)[];
-  target: (number | undefined)[];
-  mode: (string | undefined)[];
-};
-
-export type DeviceMeta = { sn: string; name: string };
-
-export type Series = {
-  from: number;
-  to: number;
-  bucketMs: number;
-  /** Bucket start times, epoch ms. uPlot wants seconds, the client converts. */
-  t: number[];
-  solar: (number | null)[];
-  acIn: (number | null)[];
-  acOut: (number | null)[];
-  balance: (number | null)[];
-  devices: {
-    sn: string;
-    name: string;
-    soc: (number | null)[];
-    acIn: (number | null)[];
-    acOut: (number | null)[];
-    target: (number | null)[];
-    /** Dominant AC mode in the bucket: charge | passthrough | battery. */
-    mode: (string | null)[];
-  }[];
-};
+export type { DeviceMeta, Series } from "./buckets";
 
 const DAY_MS = 86_400_000;
 
-const mean = (xs: number[]): number | null =>
-  xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length;
+/** Modes are held as indexes into the shared MODES list, beside the numbers. */
+const MODE_UNKNOWN = -1;
 
-/** Most frequent value in the bucket - a mode that only blipped shouldn't win. */
-const dominant = (xs: string[]): string | null => {
-  if (xs.length === 0) return null;
-  const counts = new Map<string, number>();
-  for (const x of xs) counts.set(x, (counts.get(x) ?? 0) + 1);
-  let best: string | null = null;
-  let bestN = -1;
-  for (const [k, n] of counts) if (n > bestN) [best, bestN] = [k, n];
-  return best;
-};
+/** Files the control loop writes, one per local calendar day. */
+const DAILY_RE = /^history-(\d{4}-\d{2}-\d{2})\.jsonl$/;
+/** The single growing file used before daily rotation; read if still present. */
+const LEGACY_NAME = "history.jsonl";
 
 /**
- * Reads data/history.jsonl incrementally and answers bucketed range queries.
+ * Columns rather than one object per cycle.
  *
- * The file is append-only and already 21MB after two weeks, so it is read once
- * and then tailed: each refresh stats the file and parses only the bytes added
- * since the last one. A file that shrank was pruned by hand, so it is reloaded
- * from the start. Samples older than `retentionDays` are dropped, which bounds
- * memory on the Pi - the UI never asks for more than a few weeks anyway.
+ * A cycle held as an object plus five small per-device arrays measured about
+ * 3KB on the Pi, which put the dashboard at 95MB for two weeks of history and
+ * on course for roughly 250MB once the retention window filled - on a machine
+ * with 905MB total. The same cycle as twenty numbers across parallel arrays is
+ * about 160 bytes. Missing values are NaN, which is why every read goes
+ * through `orNull`.
  */
-export const HistoryStore = (props: {
-  path: string;
-  retentionDays?: number;
-}) => {
-  const retentionMs = (props.retentionDays ?? 30) * DAY_MS;
-  let samples: Sample[] = [];
+type Columns = {
+  t: number[];
+  solar: number[];
+  acIn: number[];
+  acOut: number[];
+  balance: number[];
+  dev: { soc: number[]; acIn: number[]; acOut: number[]; target: number[]; mode: number[] }[];
+};
+
+const newColumns = (): Columns => ({ t: [], solar: [], acIn: [], acOut: [], balance: [], dev: [] });
+
+const num = (v: number | undefined): number => (v === undefined ? NaN : v);
+
+type FileState = { name: string; offset: number; partial: string; day: string | undefined };
+
+/**
+ * Reads the control loop's history logs and answers bucketed range queries.
+ *
+ * The loop writes one file per local day and never touches a completed one
+ * again, so only the newest file is tailed: each refresh stats what it knows,
+ * reads just the bytes appended since last time, and picks up files that have
+ * appeared. Files whose day is outside the retention window are not opened at
+ * all, which is what keeps startup bounded as the archive grows - and is why
+ * `soltrk summarize` may delete them without this ever noticing.
+ */
+export const HistoryStore = (props: { dataDir: string; retentionDays?: number }) => {
+  const retentionMs = (props.retentionDays ?? 60) * DAY_MS;
+  let cols = newColumns();
   let devices: DeviceMeta[] = [];
-  let offset = 0;
-  let partial = "";
+  const files = new Map<string, FileState>();
 
   const deviceIndex = (sn: string, name: string | undefined): number => {
     const existing = devices.findIndex((d) => d.sn === sn);
@@ -112,6 +93,17 @@ export const HistoryStore = (props: {
       return existing;
     }
     devices.push({ sn, name: name ?? sn });
+    cols.dev.push({ soc: [], acIn: [], acOut: [], target: [], mode: [] });
+    // Back-fill the new device's columns so every column stays the same length
+    // as `t`; a unit added mid-history must not shift earlier samples.
+    const d = cols.dev[cols.dev.length - 1];
+    for (let i = 0; i < cols.t.length; i += 1) {
+      d.soc.push(NaN);
+      d.acIn.push(NaN);
+      d.acOut.push(NaN);
+      d.target.push(NaN);
+      d.mode.push(MODE_UNKNOWN);
+    }
     return devices.length - 1;
   };
 
@@ -121,142 +113,181 @@ export const HistoryStore = (props: {
     try {
       rec = JSON.parse(line) as CycleRecord;
     } catch {
-      return; // a torn last line while the loop was mid-write; it reappears complete next refresh
+      return; // a torn last line while the loop was mid-write; complete next refresh
     }
     const t = Date.parse(rec.timestamp ?? "");
     if (Number.isNaN(t)) return;
-    const sample: Sample = {
-      t,
-      solar: rec.totalSolarWatts,
-      acIn: rec.totalAcInputWatts,
-      acOut: rec.totalAcOutputWatts,
-      balance: rec.balanceWatts,
-      soc: [],
-      devAcIn: [],
-      devAcOut: [],
-      target: [],
-      mode: [],
-    };
+
+    cols.t.push(t);
+    cols.solar.push(num(rec.totalSolarWatts));
+    cols.acIn.push(num(rec.totalAcInputWatts));
+    cols.acOut.push(num(rec.totalAcOutputWatts));
+    cols.balance.push(num(rec.balanceWatts));
+    const row = cols.t.length - 1;
+    for (const d of cols.dev) {
+      d.soc.push(NaN);
+      d.acIn.push(NaN);
+      d.acOut.push(NaN);
+      d.target.push(NaN);
+      d.mode.push(MODE_UNKNOWN);
+    }
     for (const d of rec.devices ?? []) {
       if (!d.sn) continue;
       const i = deviceIndex(d.sn, d.name);
-      sample.soc[i] = d.batterySoc;
-      sample.devAcIn[i] = d.acInputWatts;
-      sample.devAcOut[i] = d.acOutputWatts;
-      sample.target[i] = d.targetWatts;
-      sample.mode[i] = d.mode;
+      const c = cols.dev[i];
+      c.soc[row] = num(d.batterySoc);
+      c.acIn[row] = num(d.acInputWatts);
+      c.acOut[row] = num(d.acOutputWatts);
+      c.target[row] = num(d.targetWatts);
+      c.mode[row] = d.mode ? MODES.indexOf(d.mode as (typeof MODES)[number]) : MODE_UNKNOWN;
     }
-    samples.push(sample);
   };
 
   const prune = (): void => {
-    if (samples.length === 0) return;
-    const cutoff = samples[samples.length - 1].t - retentionMs;
-    if (samples[0].t >= cutoff) return;
-    samples = samples.filter((s) => s.t >= cutoff);
+    if (cols.t.length === 0) return;
+    const cutoff = cols.t[cols.t.length - 1] - retentionMs;
+    if (cols.t[0] >= cutoff) return;
+    let first = 0;
+    while (first < cols.t.length && cols.t[first] < cutoff) first += 1;
+    if (first === 0) return;
+    cols.t = cols.t.slice(first);
+    cols.solar = cols.solar.slice(first);
+    cols.acIn = cols.acIn.slice(first);
+    cols.acOut = cols.acOut.slice(first);
+    cols.balance = cols.balance.slice(first);
+    for (const d of cols.dev) {
+      d.soc = d.soc.slice(first);
+      d.acIn = d.acIn.slice(first);
+      d.acOut = d.acOut.slice(first);
+      d.target = d.target.slice(first);
+      d.mode = d.mode.slice(first);
+    }
   };
 
-  const refresh = async (): Promise<undefined | Error> => {
+  /**
+   * Files worth opening: the legacy one, plus days inside the window.
+   *
+   * The window is measured back from the newest day present, not from the
+   * clock. Measuring from the clock looks equivalent and is not: if the loop
+   * has been stopped for longer than the retention window, every file falls
+   * outside it and the dashboard goes blank exactly when someone is trying to
+   * find out what happened. It also keeps this in step with `prune`, which is
+   * likewise relative to the newest sample.
+   */
+  const relevantFiles = async (): Promise<{ name: string; day: string | undefined }[]> => {
+    const entries = await readdir(props.dataDir);
+    const days = entries.map((n) => DAILY_RE.exec(n)?.[1]).filter((d): d is string => d !== undefined);
+    const newest = days.sort().at(-1);
+    // A day of slack: the filename names a local day while this arithmetic is
+    // in UTC, and keeping a file that turns out to be unwanted is much cheaper
+    // than dropping one that still holds samples on display.
+    const cutoffDay =
+      newest === undefined
+        ? undefined
+        : new Date(Date.parse(`${newest}T00:00:00Z`) - retentionMs - DAY_MS).toISOString().slice(0, 10);
+
+    const out: { name: string; day: string | undefined }[] = [];
+    for (const name of entries) {
+      if (name === LEGACY_NAME) out.push({ name, day: undefined });
+      const m = DAILY_RE.exec(name);
+      if (m && (cutoffDay === undefined || m[1] >= cutoffDay)) out.push({ name, day: m[1] });
+    }
+    // Legacy first, then days in order, so samples arrive sorted by time.
+    return out.sort((a, b) => (a.day ?? "").localeCompare(b.day ?? ""));
+  };
+
+  const readNewBytes = async (f: FileState): Promise<void> => {
+    const path = join(props.dataDir, f.name);
     let size: number;
     try {
-      size = (await stat(props.path)).size;
-    } catch (err) {
-      return err as Error;
+      size = (await stat(path)).size;
+    } catch {
+      files.delete(f.name); // summarised and deleted underneath us; fine
+      return;
     }
-    if (size < offset) {
-      // Pruned or rotated by hand - start over rather than read garbage.
-      samples = [];
-      devices = [];
-      offset = 0;
-      partial = "";
+    if (size < f.offset) {
+      // Truncated or replaced by hand - the samples already read stay, and the
+      // file is picked up again from the start on the next pass.
+      f.offset = 0;
+      f.partial = "";
     }
-    if (size === offset) return undefined;
-
-    const handle = await open(props.path, "r");
+    if (size === f.offset) return;
+    const handle = await open(path, "r");
     try {
-      const length = size - offset;
+      const length = size - f.offset;
       const buf = Buffer.allocUnsafe(length);
-      await handle.read(buf, 0, length, offset);
-      offset = size;
-      const text = partial + buf.toString("utf8");
-      const lines = text.split("\n");
-      partial = lines.pop() ?? "";
+      await handle.read(buf, 0, length, f.offset);
+      f.offset = size;
+      const lines = (f.partial + buf.toString("utf8")).split("\n");
+      f.partial = lines.pop() ?? "";
       for (const line of lines) ingest(line);
     } finally {
       await handle.close();
+    }
+  };
+
+  const refresh = async (): Promise<undefined | Error> => {
+    let found: { name: string; day: string | undefined }[];
+    try {
+      found = await relevantFiles();
+    } catch (err) {
+      return err as Error;
+    }
+    const present = new Set(found.map((f) => f.name));
+    for (const name of files.keys()) if (!present.has(name)) files.delete(name);
+    for (const f of found) {
+      let state = files.get(f.name);
+      if (state === undefined) {
+        state = { name: f.name, offset: 0, partial: "", day: f.day };
+        files.set(f.name, state);
+      }
+      await readNewBytes(state);
     }
     prune();
     return undefined;
   };
 
-  const query = (opts: { from: number; to: number; buckets: number }): Series => {
-    const span = Math.max(1, opts.to - opts.from);
-    const bucketMs = Math.max(1000, Math.ceil(span / Math.max(1, opts.buckets)));
-    const count = Math.ceil(span / bucketMs);
-
-    const t: number[] = [];
-    for (let i = 0; i < count; i += 1) t.push(opts.from + i * bucketMs);
-
-    const empty = (): number[][] => Array.from({ length: count }, () => []);
-    const solarB = empty();
-    const acInB = empty();
-    const acOutB = empty();
-    const balanceB = empty();
-    const devB = devices.map(() => ({
-      soc: empty(),
-      acIn: empty(),
-      acOut: empty(),
-      target: empty(),
-      mode: Array.from({ length: count }, () => [] as string[]),
-    }));
-
-    for (const s of samples) {
-      if (s.t < opts.from || s.t >= opts.to) continue;
-      const b = Math.min(count - 1, Math.floor((s.t - opts.from) / bucketMs));
-      if (s.solar !== undefined) solarB[b].push(s.solar);
-      if (s.acIn !== undefined) acInB[b].push(s.acIn);
-      if (s.acOut !== undefined) acOutB[b].push(s.acOut);
-      if (s.balance !== undefined) balanceB[b].push(s.balance);
-      for (let i = 0; i < devices.length; i += 1) {
-        const d = devB[i];
-        if (s.soc[i] !== undefined) d.soc[b].push(s.soc[i] as number);
-        if (s.devAcIn[i] !== undefined) d.acIn[b].push(s.devAcIn[i] as number);
-        if (s.devAcOut[i] !== undefined) d.acOut[b].push(s.devAcOut[i] as number);
-        if (s.target[i] !== undefined) d.target[b].push(s.target[i] as number);
-        if (s.mode[i] !== undefined) d.mode[b].push(s.mode[i] as string);
+  /**
+   * Adds every raw sample in range to a builder that may also be receiving
+   * hourly aggregates from the monthly summaries. Each sample counts as one.
+   */
+  const contribute = (b: SeriesBuilder): void => {
+    for (const d of devices) b.touchDevice(d);
+    for (let r = 0; r < cols.t.length; r += 1) {
+      const i = b.indexOf(cols.t[r]);
+      if (i < 0) continue;
+      for (const k of ["solar", "acIn", "acOut", "balance"] as const) {
+        const v = cols[k][r];
+        if (!Number.isNaN(v)) b.addGlobal(k, i, v, 1);
+      }
+      for (let dv = 0; dv < cols.dev.length; dv += 1) {
+        const c = cols.dev[dv];
+        const meta = devices[dv];
+        for (const k of ["soc", "acIn", "acOut", "target"] as const) {
+          const v = c[k][r];
+          if (!Number.isNaN(v)) b.addDevice(meta, k, i, v, 1);
+        }
+        const m = c.mode[r];
+        if (m >= 0) b.addMode(meta, MODES[m], i, 1);
       }
     }
+  };
 
-    return {
-      from: opts.from,
-      to: opts.to,
-      bucketMs,
-      t,
-      solar: solarB.map(mean),
-      acIn: acInB.map(mean),
-      acOut: acOutB.map(mean),
-      balance: balanceB.map(mean),
-      devices: devices.map((d, i) => ({
-        sn: d.sn,
-        name: d.name,
-        soc: devB[i].soc.map(mean),
-        acIn: devB[i].acIn.map(mean),
-        acOut: devB[i].acOut.map(mean),
-        target: devB[i].target.map(mean),
-        mode: devB[i].mode.map(dominant),
-      })),
-    };
+  const query = (opts: { from: number; to: number; buckets: number }): Series => {
+    const b = SeriesBuilder(opts);
+    contribute(b);
+    return b.finish();
   };
 
   return {
     refresh,
     query,
+    contribute,
     devices: (): DeviceMeta[] => devices.map((d) => ({ ...d })),
-    sampleCount: (): number => samples.length,
+    sampleCount: (): number => cols.t.length,
+    files: (): string[] => [...files.keys()],
     span: (): { from: number; to: number } | undefined =>
-      samples.length === 0
-        ? undefined
-        : { from: samples[0].t, to: samples[samples.length - 1].t },
+      cols.t.length === 0 ? undefined : { from: cols.t[0], to: cols.t[cols.t.length - 1] },
   };
 };
 

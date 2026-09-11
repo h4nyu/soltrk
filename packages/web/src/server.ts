@@ -1,7 +1,9 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { SeriesBuilder } from "./buckets";
 import { HistoryStore } from "./history";
+import { SummaryStore } from "./summaries";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -41,9 +43,12 @@ export const DashboardServer = (props: {
   retentionDays?: number;
 }) => {
   const history = HistoryStore({
-    path: join(props.dataDir, "history.jsonl"),
+    dataDir: props.dataDir,
     retentionDays: props.retentionDays,
   });
+  // Anything older than the raw window comes from the monthly summaries that
+  // `soltrk summarize` leaves behind after deleting the raw days.
+  const summaries = SummaryStore({ dataDir: props.dataDir });
   const distRoot = resolve(props.distDir);
 
   const serveStatic = async (urlPath: string, res: ServerResponse): Promise<void> => {
@@ -92,15 +97,32 @@ export const DashboardServer = (props: {
         sendJson(res, 503, { error: refreshed.message });
         return;
       }
-      const span = history.span();
-      const to = Number(url.searchParams.get("to")) || span?.to || Date.now();
+      await summaries.refresh();
+
+      const raw = history.span();
+      const rolled = summaries.span();
+      const available =
+        raw && rolled
+          ? { from: Math.min(raw.from, rolled.from), to: Math.max(raw.to, rolled.to) }
+          : (raw ?? rolled);
+
+      const to = Number(url.searchParams.get("to")) || available?.to || Date.now();
       const hours = Number(url.searchParams.get("hours")) || 24;
       const from = Number(url.searchParams.get("from")) || to - hours * HOUR_MS;
       const buckets = Math.min(2000, Math.max(10, Number(url.searchParams.get("buckets")) || 500));
+
+      const builder = SeriesBuilder({ from, to, buckets });
+      history.contribute(builder);
+      // The raw log wins wherever it reaches; summaries fill in before that,
+      // so no cycle is counted from both sources.
+      summaries.contribute(builder, raw?.from ?? Number.POSITIVE_INFINITY);
+
       sendJson(res, 200, {
-        ...history.query({ from, to, buckets }),
-        available: span ?? null,
+        ...builder.finish(),
+        available: available ?? null,
         sampleCount: history.sampleCount(),
+        rawFrom: raw?.from ?? null,
+        months: summaries.months(),
       });
       return;
     }

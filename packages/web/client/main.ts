@@ -22,6 +22,9 @@ type Series = {
   }[];
   available: { from: number; to: number } | null;
   sampleCount: number;
+  /** Where the raw 30s log starts; anything before it came from a summary. */
+  rawFrom: number | null;
+  months: string[];
 };
 
 type StateDevice = {
@@ -46,6 +49,11 @@ const RANGES: { label: string; hours: number }[] = [
   { label: "3日", hours: 72 },
   { label: "7日", hours: 168 },
   { label: "30日", hours: 720 },
+  // Beyond the raw retention window these are served from the monthly
+  // summaries, at one point per hour - still finer than the buckets at this
+  // zoom, so the charts look no different.
+  { label: "3ヶ月", hours: 2160 },
+  { label: "1年", hours: 8760 },
 ];
 
 const MODE_COLOR: Record<string, string> = {
@@ -387,9 +395,26 @@ const updateCharts = (s: Series): void => {
 
 const renderMeta = (s: Series): void => {
   const av = s.available;
-  el("meta").textContent = av
-    ? `記録期間 ${new Date(av.from).toLocaleDateString("ja-JP")} 〜 ${new Date(av.to).toLocaleDateString("ja-JP")} / ${s.sampleCount.toLocaleString()} サイクル / バケット ${Math.round(s.bucketMs / 1000)}秒`
-    : "履歴なし";
+  if (!av) {
+    el("meta").textContent = "履歴なし";
+    return;
+  }
+  const d = (t: number) => new Date(t).toLocaleDateString("ja-JP");
+  const bucket =
+    s.bucketMs >= 3_600_000
+      ? `${(s.bucketMs / 3_600_000).toFixed(1)}時間`
+      : `${Math.round(s.bucketMs / 1000)}秒`;
+  const parts = [
+    `記録期間 ${d(av.from)} 〜 ${d(av.to)}`,
+    `${s.sampleCount.toLocaleString()} サイクル`,
+    `バケット ${bucket}`,
+  ];
+  // Say plainly where the numbers stop being individual cycles, so nobody
+  // reads an hourly average as if it were 30-second data.
+  if (s.rawFrom !== null && s.from < s.rawFrom) {
+    parts.push(`${d(s.rawFrom)} より前は月次サマリー(1時間平均)`);
+  }
+  el("meta").textContent = parts.join(" / ");
 };
 
 let historyTimer: number | undefined;
