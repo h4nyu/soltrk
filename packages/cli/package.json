@@ -8,10 +8,14 @@
     "soltrk": "src/index.ts"
   },
   "dependencies": {
-    "@soltrk/core": "*",
     "@soltrk/anker": "*",
+    "@soltrk/core": "*",
     "@soltrk/tuya": "*",
     "commander": "^12.1.0",
+    "node-schedule": "^2.1.1",
     "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node-schedule": "^2.1.8"
   }
 }
