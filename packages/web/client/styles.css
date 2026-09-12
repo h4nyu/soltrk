@@ -36,9 +36,13 @@ body {
   font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
   font-variant-numeric: tabular-nums;
 }
+/* Padding falls back to the plain value in a browser tab and grows to clear
+   the notch when installed to the home screen with viewport-fit=cover. */
 header {
   display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-  padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+  padding: max(14px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
+           14px max(18px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line); background: var(--panel);
   position: sticky; top: 0; z-index: 2;
 }
 h1 { margin: 0; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; }
@@ -49,7 +53,8 @@ nav button {
 }
 nav button[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 #updated { margin-left: auto; color: var(--muted); font-size: 12px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 14px 18px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;
+  padding: 14px max(18px, env(safe-area-inset-right)) 14px max(18px, env(safe-area-inset-left)); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .card .k { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
@@ -58,7 +63,8 @@ nav button[aria-pressed="true"] { background: var(--ink); color: var(--panel); b
 .pill.charge { background: var(--charge); }
 .pill.passthrough { background: var(--passthrough); }
 .pill.battery { background: var(--battery); }
-main { padding: 0 18px 18px; display: grid; gap: 14px; }
+main { display: grid; gap: 14px;
+  padding: 0 max(18px, env(safe-area-inset-right)) 18px max(18px, env(safe-area-inset-left)); }
 .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 4px; overflow-x: auto; }
 .chart h2 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
 .chart p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
@@ -70,5 +76,7 @@ main { padding: 0 18px 18px; display: grid; gap: 14px; }
 .moderow canvas { flex: 1; height: 16px; border-radius: 3px; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 6px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-footer { padding: 0 18px 24px; color: var(--muted); font-size: 12px; }
+footer { color: var(--muted); font-size: 12px;
+  padding: 0 max(18px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom))
+           max(18px, env(safe-area-inset-left)); }
 .uplot { font-family: inherit !important; }

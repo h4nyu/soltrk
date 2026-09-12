@@ -2,9 +2,23 @@
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover lets the page paint under the status bar on a
+         notched phone; styles.css pays that back with safe-area padding. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>soltrk</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>☀️</text></svg>" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <!-- Tints the browser and status bar to match whichever theme is showing. -->
+    <meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#16171a" media="(prefers-color-scheme: dark)" />
+    <!-- iOS reads none of the manifest for "add to home screen"; these three
+         are what give it a full-screen window and an icon, and they work over
+         plain HTTP, unlike a service worker. -->
+    <link rel="apple-touch-icon" href="./icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="soltrk" />
   </head>
   <body>
     <header>
