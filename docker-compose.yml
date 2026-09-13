@@ -137,11 +137,24 @@ services:
   web:
     image: soltrk:latest
     environment:
+      # Needed here too, not only by the loop: "today" and "this month" on the
+      # savings cards are local calendar boundaries.
+      TZ: *TZ
       WEB_PORT: ${WEB_PORT:-8080}
       # How much history is held in memory for the charts. The file is
       # append-only and grows about 1MB/day, so this bounds the Pi's RAM use
       # rather than the file itself.
       WEB_RETENTION_DAYS: ${WEB_RETENTION_DAYS:-30}
+      # What a saved kilowatt-hour is worth. Use the *marginal* rate - the
+      # per-kWh tariff step plus the fuel adjustment and the renewable levy -
+      # not the bill divided by its kWh: a standing charge does not shrink when
+      # you generate, so folding it in flatters the figure. 31 came from
+      # dividing a year of bills by their kWh, so it is on the high side until
+      # someone reads the three components off an actual invoice.
+      ELECTRICITY_PRICE_YEN_PER_KWH: ${ELECTRICITY_PRICE_YEN_PER_KWH:-31}
+      # Pricing needs to know what the house itself draws, and it reads the
+      # loop's own figure so the two cannot drift apart.
+      HOUSE_STANDBY_WATTS: *HOUSE_STANDBY_WATTS
     volumes:
       - ./data:/app/data:ro
       - ./packages:/app/packages

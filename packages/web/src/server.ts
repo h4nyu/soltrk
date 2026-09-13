@@ -1,7 +1,8 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
-import { SeriesBuilder } from "./buckets";
+import { Series, SeriesBuilder } from "./buckets";
+import { energyOf, periodStarts } from "./energy";
 import { HistoryStore } from "./history";
 import { SummaryStore } from "./summaries";
 
@@ -43,6 +44,9 @@ export const DashboardServer = (props: {
   dataDir: string;
   distDir: string;
   retentionDays?: number;
+  /** The loop's own constant, reused so the two cannot drift apart. */
+  houseStandbyWatts: number;
+  yenPerKwh: number;
 }) => {
   const history = HistoryStore({
     dataDir: props.dataDir,
@@ -51,6 +55,8 @@ export const DashboardServer = (props: {
   // Anything older than the raw window comes from the monthly summaries that
   // `soltrk summarize` leaves behind after deleting the raw days.
   const summaries = SummaryStore({ dataDir: props.dataDir });
+  const ENERGY_CACHE_MS = 60_000;
+  let energyCache: { at: number; series: Series } | undefined;
   const distRoot = resolve(props.distDir);
 
   const serveStatic = async (urlPath: string, res: ServerResponse): Promise<void> => {
@@ -90,6 +96,45 @@ export const DashboardServer = (props: {
       } catch (err) {
         sendJson(res, 503, { error: (err as Error).message });
       }
+      return;
+    }
+
+    if (url.pathname === "/api/energy") {
+      const refreshed = await history.refresh();
+      if (refreshed instanceof Error) {
+        sendJson(res, 503, { error: refreshed.message });
+        return;
+      }
+      await summaries.refresh();
+
+      const raw = history.span();
+      const rolled = summaries.span();
+      const earliest = Math.min(raw?.from ?? Infinity, rolled?.from ?? Infinity);
+      const now = new Date();
+      const to = now.getTime();
+      const { day, month } = periodStarts(now);
+      const from = Number.isFinite(earliest) ? earliest : day;
+
+      // One hourly series over the whole record, then three slices of it. The
+      // figures move by fractions of a yen per cycle, so recomputing more than
+      // once a minute would only spend the Pi's time.
+      if (energyCache === undefined || to - energyCache.at > ENERGY_CACHE_MS) {
+        const span = Math.max(HOUR_MS, to - from);
+        const b = SeriesBuilder({ from, to, buckets: Math.ceil(span / HOUR_MS) });
+        history.contribute(b);
+        summaries.contribute(b, raw?.from ?? Number.POSITIVE_INFINITY);
+        energyCache = { at: to, series: b.finish() };
+      }
+      const opts = { houseStandbyWatts: props.houseStandbyWatts, yenPerKwh: props.yenPerKwh };
+
+      sendJson(res, 200, {
+        yenPerKwh: props.yenPerKwh,
+        houseStandbyWatts: props.houseStandbyWatts,
+        since: Number.isFinite(earliest) ? earliest : null,
+        today: energyOf(energyCache.series, { ...opts, since: day }),
+        month: energyOf(energyCache.series, { ...opts, since: month }),
+        total: energyOf(energyCache.series, opts),
+      });
       return;
     }
 
