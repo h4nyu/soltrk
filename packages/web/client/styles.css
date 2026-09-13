@@ -59,6 +59,13 @@ nav button[aria-pressed="true"] { background: var(--ink); color: var(--panel); b
 .card .k { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
 .card .s { color: var(--muted); font-size: 12px; }
+/* The savings row is a footnote to the live cards above it, not a peer: same
+   card, quieter type, so it does not compete with the current readings. */
+/* Capped and left-aligned rather than stretched: with only three of them,
+   auto-fit would spread them far wider than the live cards above. */
+.savings { padding-top: 0; grid-template-columns: repeat(auto-fit, minmax(150px, 210px)); justify-content: start; }
+.savings .card { background: transparent; border-style: dashed; }
+.savings .v { font-size: 18px; }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; color: #fff; }
 .pill.charge { background: var(--charge); }
 .pill.passthrough { background: var(--passthrough); }

@@ -36,6 +36,16 @@ type StateDevice = {
   targetWatts?: number;
   mode?: string;
 };
+type Energy = {
+  yenPerKwh: number;
+  houseStandbyWatts: number;
+  since: number | null;
+  today: Totals;
+  month: Totals;
+  total: Totals;
+};
+type Totals = { generatedKwh: number; usedKwh: number; yen: number };
+
 type State = {
   timestamp: string;
   totalSolarWatts?: number;
@@ -107,6 +117,26 @@ const renderRanges = (): void => {
   );
 };
 
+const yen = (n: number): string => `${Math.round(n).toLocaleString()}円`;
+const kwh = (n: number): string => `${n.toFixed(n < 10 ? 2 : 1)} kWh`;
+
+const renderSavings = (e: Energy): void => {
+  const since = e.since ? new Date(e.since).toLocaleDateString("ja-JP") : null;
+  const cards: [string, Totals, string][] = [
+    ["今日の節約", e.today, ""],
+    ["今月", e.month, ""],
+    ["累計", e.total, since ? `${since} から` : ""],
+  ];
+  el("savings").innerHTML = cards
+    .map(
+      ([label, t, note]) =>
+        `<div class="card"><div class="k">${label}</div>` +
+        `<div class="v">${yen(t.yen)}</div>` +
+        `<div class="s">${kwh(t.usedKwh)}${note ? ` / ${note}` : ""}</div></div>`,
+    )
+    .join("");
+};
+
 const renderNow = (state: State): void => {
   const cards: string[] = [];
   const bal = state.balanceWatts ?? 0;
@@ -160,6 +190,11 @@ const makeChart = (
         stroke: css("--muted"),
         grid: { stroke: css("--line") },
         ticks: { stroke: css("--line") },
+        // SOC is only ever reported in whole percent, so let uPlot pick from
+        // integer steps. Left to itself over a range pinned near 6% it chooses
+        // 0.025 steps, and "5.975%" is both meaningless and too wide for the
+        // axis gutter, so the label gets clipped to "975%".
+        incrs: opts.unit === "%" ? [1, 2, 5, 10, 20, 25, 50, 100] : undefined,
         values: (_u, vals) => vals.map((v) => `${v}${opts.unit}`),
       },
     ],
@@ -457,6 +492,13 @@ const refreshState = async (): Promise<void> => {
     renderNow((await fetch("/api/state").then((r) => r.json())) as State);
   } catch (err) {
     console.error("[soltrk] state refresh failed", err);
+  }
+  try {
+    // Served from a once-a-minute cache, so asking on every state tick is
+    // cheap even though it covers the whole record.
+    renderSavings((await fetch("/api/energy").then((r) => r.json())) as Energy);
+  } catch (err) {
+    console.error("[soltrk] energy refresh failed", err);
   }
 };
 
