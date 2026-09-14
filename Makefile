@@ -32,7 +32,8 @@ web: web-build
 # Rolls completed days into data/summaries/YYYY-MM.json and deletes raw days
 # that are both summarised and past the retention window. Safe to run against
 # the live loop - the day currently being written is never read or deleted -
-# and safe to run twice. Nightly from cron on the Pi.
+# and safe to run twice. The `scheduler` compose service runs it nightly;
+# this is the manual form.
 summarize:
 	docker compose run --rm app soltrk summarize
 

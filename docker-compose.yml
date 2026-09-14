@@ -118,8 +118,8 @@ services:
     command: ["npx", "tsx", "packages/cli/src/index.ts", "schedule"]
     restart: unless-stopped
 
-  # Read-only dashboard over the loop's own output (data/state.json and
-  # data/history.jsonl). Same image as the services above with a different
+  # Read-only dashboard over the loop's own output (data/state.json and the
+  # daily history logs). Same image as the services above with a different
   # command - packages/web is already inside it, both COPY'd at build time and
   # bind-mounted at runtime, so it needs no image of its own.
   #
@@ -129,8 +129,9 @@ services:
   # Written out rather than merging `*app` on purpose: that anchor carries
   # `build: .`, and inheriting it would let `up -d --build web` rebuild the
   # control loop's image behind your back. With no build section here, nothing
-  # done to this service can touch it. Run `webbuild` above after a UI change,
-  # then `docker compose up -d web` - never `--build`.
+  # done to this service can touch it. After a UI change run `make web-build` -
+  # the running server reads dist from disk, so no restart is needed - and
+  # never `docker compose up --build web`.
   #
   # It also takes none of *env: the dashboard has no business holding the Anker
   # credentials, and ./data is mounted read-only since it only ever reads.
