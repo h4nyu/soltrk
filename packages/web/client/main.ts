@@ -137,13 +137,66 @@ const renderSavings = (e: Energy): void => {
     .join("");
 };
 
+/**
+ * Where this cycle's generation went, using only what is actually metered.
+ *
+ * The four figures partition the solar, to within METER_NOISE_WATTS per unit:
+ *   solar = used + charging - discharging + remaining
+ * because the units' total AC input is their output plus whatever they kept
+ * (or minus whatever they gave back from the battery). What the page cannot
+ * show is the rest of the house - lights, ventilation, the air purifiers - which
+ * is not on any unit and not metered. That is where "remaining" goes, so a
+ * positive remainder is NOT a surplus: it is consumed by loads this system
+ * cannot see, and the house may well still be importing. The card used to say
+ * "余剰" and was wrong for exactly that reason.
+ */
+/**
+ * Below this, a gap between a unit's AC input and output is meter noise, not a
+ * battery doing anything. In passthrough the two should be identical and
+ * measure a few watts apart - one reading of 88W in and 92W out would otherwise
+ * be announced as "放電 4W". Real charging starts at the 30W floor plus the
+ * charger's overhead, and a unit on its battery carries a real load, so nothing
+ * genuine is lost below 10W.
+ */
+const METER_NOISE_WATTS = 10;
+
+const flows = (state: State) => {
+  let used = 0;
+  let charging = 0;
+  let discharging = 0;
+  for (const d of state.devices ?? []) {
+    const input = d.acInputWatts ?? 0;
+    const output = d.acOutputWatts ?? 0;
+    used += output;
+    const gap = input - output;
+    if (gap > METER_NOISE_WATTS) charging += gap;
+    else if (-gap > METER_NOISE_WATTS) discharging += -gap;
+  }
+  // Same as the loop's balanceWatts: solar minus the units' total AC input.
+  const remaining = state.balanceWatts ?? 0;
+  return { used, charging, discharging, remaining };
+};
+
 const renderNow = (state: State): void => {
   const cards: string[] = [];
-  const bal = state.balanceWatts ?? 0;
+  const f = flows(state);
+  const card = (k: string, v: string, sub: string, colour?: string): string =>
+    `<div class="card"><div class="k">${k}</div>` +
+    `<div class="v"${colour ? ` style="color:${colour}"` : ""}>${v}</div>` +
+    `<div class="s">${sub}</div></div>`;
+
   cards.push(
-    `<div class="card"><div class="k">発電</div><div class="v">${fmtW(state.totalSolarWatts)}</div></div>`,
-    `<div class="card"><div class="k">収支</div><div class="v" style="color:${bal < 0 ? css("--import") : css("--export")}">${bal < 0 ? "" : "+"}${Math.round(bal)}W</div>` +
-      `<div class="s">${bal < 0 ? "グリッドから購入" : "余剰"}</div></div>`,
+    card("発電", fmtW(state.totalSolarWatts), ""),
+    card("使用量", fmtW(f.used), "3台につないだ負荷"),
+    // acIn - acOut includes the ~33W the charger loses as heat, so this is what
+    // went into the units rather than what ended up stored.
+    card("充電", fmtW(f.charging), f.discharging > 0 ? `放電 ${fmtW(f.discharging)}` : "変換ロス込み"),
+    card(
+      "3台に回した後の残り",
+      `${f.remaining < 0 ? "" : "+"}${Math.round(f.remaining)}W`,
+      f.remaining < 0 ? "3台だけで発電を超過・購入中" : "照明・換気など計測外の負荷へ",
+      f.remaining < 0 ? css("--import") : undefined,
+    ),
   );
   for (const d of state.devices ?? []) {
     const mode = d.mode ?? "—";
@@ -357,12 +410,13 @@ const buildCharts = (s: Series): void => {
 
   makeChart(
     host,
-    "発電と収支",
-    "収支は 発電 − 家の想定負荷 − 各ユニットのAC取り込み。0を下回っている間はグリッドから買っている(意図した運転点)。",
+    "発電と、3台に回した後の残り",
+    "残り = 発電 − 3台のAC取り込み。0を下回っている間は3台だけで発電を超えていてグリッドから買っている。" +
+      "上回っていても照明・換気など計測外の負荷に回るので、余っているとは限らない。",
     xs,
     [
       { label: "発電", data: s.solar, color: css("--solar") },
-      { label: "収支", data: s.balance, color: css("--import") },
+      { label: "残り", data: s.balance, color: css("--import") },
     ],
     { unit: "W", zeroLine: true },
   );
