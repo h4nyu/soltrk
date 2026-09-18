@@ -530,7 +530,7 @@ entry per battery:
 ```json
 [
   { "sn": "APCDLRG0G06401641", "name": "冷蔵庫", "vendor": "anker-gated" },
-  { "sn": "APCDLRG0G06400974", "name": "キッチン", "vendor": "anker" }
+  { "sn": "APCDLRG0G06400149", "name": "事務室", "vendor": "anker-gated" }
 ]
 ```
 
