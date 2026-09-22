@@ -208,25 +208,27 @@ const flows = (state: State) => {
 const knownPanels = new Set<string>();
 
 const renderNow = (state: State): void => {
-  const cards: string[] = [];
   const f = flows(state);
   const card = (k: string, v: string, sub: string, colour?: string): string =>
     `<div class="card"><div class="k">${k}</div>` +
     `<div class="v"${colour ? ` style="color:${colour}"` : ""}>${v}</div>` +
     `<div class="s">${sub}</div></div>`;
 
-  cards.push(card("発電", fmtW(state.totalSolarWatts), ""));
-  // One card per inverter, right after the total it's a breakdown of.
+  // Two groups - what the panels made, and what the batteries did with it -
+  // rather than one long row where a generation figure sits next to a
+  // battery figure with nothing marking the seam between them.
+  const panelCards: string[] = [card("発電", fmtW(state.totalSolarWatts), "")];
   for (const name of Object.keys(state.solarByPanel ?? {})) knownPanels.add(name);
   [...knownPanels].forEach((name, i) => {
     const watts = state.solarByPanel?.[name];
-    cards.push(
+    panelCards.push(
       `<div class="card"><div class="k"><i class="dot" style="background:${css(DEVICE_STROKES[i % DEVICE_STROKES.length])}"></i>${name}</div>` +
         `<div class="v">${fmtW(watts)}</div>` +
         `<div class="s">${watts === undefined ? "応答なし" : ""}</div></div>`,
     );
   });
-  cards.push(
+
+  const batteryCards: string[] = [
     card("使用量", fmtW(f.used), "3台につないだ負荷"),
     // acIn - acOut includes the ~33W the charger loses as heat, so this is what
     // went into the units rather than what ended up stored.
@@ -237,16 +239,18 @@ const renderNow = (state: State): void => {
       f.remaining < 0 ? "3台だけで発電を超過・購入中" : "照明・換気など計測外の負荷へ",
       f.remaining < 0 ? css("--import") : undefined,
     ),
-  );
+  ];
   for (const d of state.devices ?? []) {
     const mode = d.mode ?? "—";
-    cards.push(
+    batteryCards.push(
       `<div class="card"><div class="k">${d.name ?? d.sn}</div>` +
         `<div class="v">${d.batterySoc === undefined ? "—" : `${d.batterySoc}%`}</div>` +
         `<div class="s"><span class="pill ${mode}">${mode}</span> ${fmtW(d.acInputWatts)} → ${fmtW(d.acOutputWatts)}</div></div>`,
     );
   }
-  el("now").innerHTML = cards.join("");
+
+  el("panels").innerHTML = panelCards.join("");
+  el("battery").innerHTML = batteryCards.join("");
   el("updated").textContent = `${new Date(state.timestamp).toLocaleString("ja-JP")} 更新`;
 };
 
