@@ -27,6 +27,8 @@ type DeviceRecord = {
 type CycleRecord = {
   timestamp?: string;
   totalSolarWatts?: number;
+  /** Absent entirely on records written before per-panel tracking existed. */
+  solarByPanel?: Record<string, number>;
   totalAcInputWatts?: number;
   totalAcOutputWatts?: number;
   balanceWatts?: number;
@@ -62,9 +64,21 @@ type Columns = {
   acOut: number[];
   balance: number[];
   dev: { soc: number[]; acIn: number[]; acOut: number[]; target: number[]; mode: number[] }[];
+  /** One column per panel, positional against `panelNames` below - the same
+   *  pattern `dev` uses against `devices`, just with a single number rather
+   *  than several fields since a panel only ever reports watts. */
+  panel: number[][];
 };
 
-const newColumns = (): Columns => ({ t: [], solar: [], acIn: [], acOut: [], balance: [], dev: [] });
+const newColumns = (): Columns => ({
+  t: [],
+  solar: [],
+  acIn: [],
+  acOut: [],
+  balance: [],
+  dev: [],
+  panel: [],
+});
 
 const num = (v: number | undefined): number => (v === undefined ? NaN : v);
 
@@ -84,6 +98,7 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
   const retentionMs = (props.retentionDays ?? 60) * DAY_MS;
   let cols = newColumns();
   let devices: DeviceMeta[] = [];
+  let panelNames: string[] = [];
   const files = new Map<string, FileState>();
 
   const deviceIndex = (sn: string, name: string | undefined): number => {
@@ -105,6 +120,17 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
       d.mode.push(MODE_UNKNOWN);
     }
     return devices.length - 1;
+  };
+
+  const panelIndex = (name: string): number => {
+    const existing = panelNames.indexOf(name);
+    if (existing >= 0) return existing;
+    panelNames.push(name);
+    // Back-fill so this column stays the same length as `t`: a panel that
+    // starts reporting mid-history (or is only added to tuya.json later)
+    // must not shift earlier samples.
+    cols.panel.push(new Array<number>(cols.t.length).fill(NaN));
+    return panelNames.length - 1;
   };
 
   const ingest = (line: string): void => {
@@ -131,6 +157,7 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
       d.target.push(NaN);
       d.mode.push(MODE_UNKNOWN);
     }
+    for (const p of cols.panel) p.push(NaN);
     for (const d of rec.devices ?? []) {
       if (!d.sn) continue;
       const i = deviceIndex(d.sn, d.name);
@@ -140,6 +167,9 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
       c.acOut[row] = num(d.acOutputWatts);
       c.target[row] = num(d.targetWatts);
       c.mode[row] = d.mode ? MODES.indexOf(d.mode as (typeof MODES)[number]) : MODE_UNKNOWN;
+    }
+    for (const [name, watts] of Object.entries(rec.solarByPanel ?? {})) {
+      cols.panel[panelIndex(name)][row] = watts;
     }
   };
 
@@ -162,6 +192,7 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
       d.target = d.target.slice(first);
       d.mode = d.mode.slice(first);
     }
+    cols.panel = cols.panel.map((p) => p.slice(first));
   };
 
   /**
@@ -253,6 +284,7 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
    */
   const contribute = (b: SeriesBuilder): void => {
     for (const d of devices) b.touchDevice(d);
+    for (const name of panelNames) b.touchPanel(name);
     for (let r = 0; r < cols.t.length; r += 1) {
       const i = b.indexOf(cols.t[r]);
       if (i < 0) continue;
@@ -269,6 +301,10 @@ export const HistoryStore = (props: { dataDir: string; retentionDays?: number })
         }
         const m = c.mode[r];
         if (m >= 0) b.addMode(meta, MODES[m], i, 1);
+      }
+      for (let pv = 0; pv < cols.panel.length; pv += 1) {
+        const v = cols.panel[pv][r];
+        if (!Number.isNaN(v)) b.addPanel(panelNames[pv], i, v, 1);
       }
     }
   };

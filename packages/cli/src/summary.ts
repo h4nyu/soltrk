@@ -29,6 +29,11 @@ export type Hour = {
   bal?: Acc;
   /** Positional, aligned with the file's `devices` list. */
   dev: DeviceHour[];
+  /** Keyed directly by panel name rather than a positional index like `dev`
+   *  is: there are only ever a couple of panels, their names are short, and
+   *  a panel has one figure (watts) rather than a battery's several, so the
+   *  indirection a device list buys isn't worth a second registry here. */
+  panels?: Record<string, Acc>;
 };
 
 export type MonthSummary = {
@@ -54,6 +59,7 @@ export type MonthSummary = {
 type Rec = {
   timestamp?: string;
   totalSolarWatts?: number;
+  solarByPanel?: Record<string, number>;
   totalAcInputWatts?: number;
   totalAcOutputWatts?: number;
   balanceWatts?: number;
@@ -152,6 +158,15 @@ export const foldRecords = (
     hour.acIn = add(hour.acIn, rec.totalAcInputWatts);
     hour.acOut = add(hour.acOut, rec.totalAcOutputWatts);
     hour.bal = add(hour.bal, rec.balanceWatts);
+
+    for (const [name, watts] of Object.entries(rec.solarByPanel ?? {})) {
+      hour.panels = hour.panels ?? {};
+      // Not `add()`: watts here is always a real number (Object.entries never
+      // yields an undefined value), so the sum is never left as `undefined`
+      // the way add()'s general v-may-be-missing signature allows.
+      const prev = hour.panels[name];
+      hour.panels[name] = prev === undefined ? [watts, 1] : [prev[0] + watts, prev[1] + 1];
+    }
 
     for (const d of rec.devices ?? []) {
       if (!d.sn) continue;

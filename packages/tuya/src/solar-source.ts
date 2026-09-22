@@ -247,31 +247,27 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
     for (const d of devices) d.client.disconnect();
   };
 
-  /** Sum of the latest known wattage across all panels. A panel that's gone
-   * stale keeps contributing its last known reading rather than dropping to
-   * zero - solar output moves gradually (observed: roughly an hour from 0
-   * to peak), so a stale-but-recent reading is a far better estimate than
-   * zero during a connectivity blip, and it's overwritten the instant a
-   * fresh reading arrives anyway. Only a panel that has never reported
-   * anything at all (no reading to fall back on) contributes 0 - logged
-   * once so a permanently-unreachable panel is still visible somewhere,
-   * even though it no longer affects the total once it has ever reported. */
-  const getTotalWatts: IF["getTotalWatts"] = () => {
+  /** Per-panel latest known wattage - see the port's doc comment for the
+   * exact contract. A panel that's gone stale is dropped rather than
+   * contributing its last known reading forever: solar output moves
+   * gradually (observed: roughly an hour from 0 to peak), so while a
+   * stale-but-recent reading is a fine estimate for the few refresh cycles
+   * it takes to reconnect, a panel that has gone unreachable for longer
+   * must not go on contributing a frozen figure indefinitely. Seen live on
+   * 2026-09-01: gtb800-2 dropped off the network at 11:20 and, under the
+   * old total-only version of this method, its 72W went on being added for
+   * the next forty minutes - the allocator sized charges against
+   * generation that had stopped. Overnight it would be worse still: a panel
+   * that died in daylight freezes at its daytime figure, and the loop
+   * spends the night believing there is sun to charge with. */
+  const getWattsByPanel: IF["getWattsByPanel"] = () => {
     const now = Date.now();
-    let total = 0;
+    const out: Record<string, number> = {};
     for (const d of devices) {
       if (d.lastWatts === undefined) {
         console.warn(`[tuya:${d.config.name}] no reading yet - excluding from total`);
         continue;
       }
-      // A device that has gone unreachable keeps its last value forever
-      // otherwise, and that value is worse than nothing. Seen live on
-      // 2026-09-01: gtb800-2 dropped off the network at 11:20 and its 72W
-      // went on being added to the total for the next forty minutes, so the
-      // allocator was sizing charges against generation that had stopped.
-      // Overnight it would be worse still - a panel that died in daylight
-      // freezes at its daytime figure, and the loop spends the night
-      // believing there is sun to charge with.
       const ageMs = now - d.lastUpdatedAt;
       if (ageMs > STALE_AFTER_MS) {
         if (!d.staleWarned) {
@@ -283,10 +279,10 @@ export const SolarSource = (props: { configs: TuyaDeviceConfig[] }): IF => {
         }
         continue;
       }
-      total += d.lastWatts;
+      out[d.config.name] = d.lastWatts;
     }
-    return total;
+    return out;
   };
 
-  return { connect, disconnect, getTotalWatts };
+  return { connect, disconnect, getWattsByPanel };
 };

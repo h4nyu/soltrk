@@ -18,6 +18,13 @@ export type Series = {
     target: (number | null)[];
     mode: (string | null)[];
   }[];
+  /** Per-panel generation - one series per inverter, keyed by name rather
+   *  than an sn like `devices`: a panel has no battery serial, just the name
+   *  it was configured with. */
+  panels: {
+    name: string;
+    watts: (number | null)[];
+  }[];
 };
 
 /** AC modes are a closed set, so a bucket can just count each one. */
@@ -43,6 +50,8 @@ type DeviceAccs = {
   modes: number[][];
 };
 
+type PanelAcc = { name: string; watts: Acc };
+
 /**
  * Accumulates a time range into fixed buckets, as sums and counts.
  *
@@ -66,6 +75,8 @@ export const SeriesBuilder = (opts: { from: number; to: number; buckets: number 
   };
   const devices: DeviceAccs[] = [];
   const bySn = new Map<string, number>();
+  const panels: PanelAcc[] = [];
+  const panelByName = new Map<string, number>();
 
   const deviceAt = (meta: DeviceMeta): DeviceAccs => {
     const known = bySn.get(meta.sn);
@@ -84,6 +95,15 @@ export const SeriesBuilder = (opts: { from: number; to: number; buckets: number 
     bySn.set(meta.sn, devices.length);
     devices.push(d);
     return d;
+  };
+
+  const panelAt = (name: string): PanelAcc => {
+    const known = panelByName.get(name);
+    if (known !== undefined) return panels[known];
+    const p: PanelAcc = { name, watts: newAcc(count) };
+    panelByName.set(name, panels.length);
+    panels.push(p);
+    return p;
   };
 
   /** Bucket index for an instant, or -1 when it falls outside the range. */
@@ -117,6 +137,15 @@ export const SeriesBuilder = (opts: { from: number; to: number; buckets: number 
     touchDevice(meta: DeviceMeta): void {
       deviceAt(meta);
     },
+    addPanel(name: string, b: number, sum: number, n: number): void {
+      const p = panelAt(name);
+      p.watts.s[b] += sum;
+      p.watts.n[b] += n;
+    },
+    /** Registers a panel even if it has no readings, so it keeps its slot. */
+    touchPanel(name: string): void {
+      panelAt(name);
+    },
     finish(): Series {
       const t: number[] = [];
       for (let i = 0; i < count; i += 1) t.push(opts.from + i * bucketMs);
@@ -149,6 +178,7 @@ export const SeriesBuilder = (opts: { from: number; to: number; buckets: number 
             return best < 0 ? null : MODES[best];
           }),
         })),
+        panels: panels.map((p) => ({ name: p.name, watts: meanOf(p.watts) })),
       };
     },
   };

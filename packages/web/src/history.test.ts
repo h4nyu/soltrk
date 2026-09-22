@@ -11,6 +11,7 @@ const DAY = 86_400_000;
 type LineOpts = {
   offsetMs: number;
   solar?: number;
+  solarByPanel?: Record<string, number>;
   devices?: { sn: string; name?: string; soc?: number; acIn?: number; target?: number; mode?: string }[];
 };
 
@@ -18,6 +19,7 @@ const line = (o: LineOpts): string =>
   JSON.stringify({
     timestamp: new Date(T0 + o.offsetMs).toISOString(),
     totalSolarWatts: o.solar,
+    solarByPanel: o.solarByPanel,
     devices: (o.devices ?? []).map((d) => ({
       sn: d.sn,
       name: d.name,
@@ -201,6 +203,45 @@ describe("HistoryStore", () => {
       1,
     );
     assert.equal(store.sampleCount(), 1);
+  });
+
+  test("averages per-panel watts within a bucket, keyed by name", async () => {
+    const { store } = await fixture({
+      [dayName(0)]:
+        line({ offsetMs: 0, solar: 300, solarByPanel: { "gtb800-1": 100, "gtb800-2": 200 } }) +
+        line({ offsetMs: 30_000, solar: 300, solarByPanel: { "gtb800-1": 120, "gtb800-2": 180 } }),
+    });
+    const s = store.query({ from: T0, to: T0 + 60_000, buckets: 1 });
+    assert.deepEqual(
+      s.panels.map((p) => p.name),
+      ["gtb800-1", "gtb800-2"],
+    );
+    assert.deepEqual(s.panels[0].watts, [110]);
+    assert.deepEqual(s.panels[1].watts, [190]);
+    // The total is unaffected by whichever panel breakdown happens to ride
+    // along with it - it still comes straight from totalSolarWatts.
+    assert.deepEqual(s.solar, [300]);
+  });
+
+  test("a panel absent from one cycle does not inherit the other's value", async () => {
+    const { store } = await fixture({
+      [dayName(0)]:
+        line({ offsetMs: 0, solar: 300, solarByPanel: { "gtb800-1": 100, "gtb800-2": 200 } }) +
+        // gtb800-2 went stale and was simply absent this cycle, per the
+        // port's contract - not present at 0.
+        line({ offsetMs: 60_000, solar: 100, solarByPanel: { "gtb800-1": 100 } }),
+    });
+    const s = store.query({ from: T0, to: T0 + 120_000, buckets: 2 });
+    assert.deepEqual(s.panels[0].watts, [100, 100]);
+    assert.deepEqual(s.panels[1].watts, [200, null]);
+  });
+
+  test("records with no panel breakdown at all still read fine", async () => {
+    // Older data, from before per-panel tracking existed.
+    const { store } = await fixture({ [dayName(0)]: line({ offsetMs: 0, solar: 50 }) });
+    const s = store.query({ from: T0, to: T0 + 60_000, buckets: 1 });
+    assert.deepEqual(s.panels, []);
+    assert.deepEqual(s.solar, [50]);
   });
 
   test("returns the error rather than throwing when the directory is missing", async () => {

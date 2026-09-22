@@ -25,10 +25,17 @@ describe("dayKeyFormatter", () => {
   });
 });
 
-const line = (iso: string, solar: number, soc: number, mode: string): string =>
+const line = (
+  iso: string,
+  solar: number,
+  soc: number,
+  mode: string,
+  solarByPanel?: Record<string, number>,
+): string =>
   JSON.stringify({
     timestamp: iso,
     totalSolarWatts: solar,
+    solarByPanel,
     balanceWatts: -10,
     devices: [{ sn: "A", name: "冷蔵庫", batterySoc: soc, acInputWatts: 40, targetWatts: 30, mode }],
   }) + "\n";
@@ -66,6 +73,43 @@ describe("summarize", () => {
     assert.deepEqual(s.hours[0].dev[0].m, { charge: 2 });
     assert.deepEqual(s.sources, ["history-2026-09-08.jsonl"]);
     assert.equal(s.timeZone, TOKYO);
+  });
+
+  test("folds per-panel solar as sums and counts, keyed by name", async () => {
+    const dir = await fixture({
+      "history-2026-09-08.jsonl":
+        line("2026-09-08T00:10:00Z", 300, 50, "charge", { "gtb800-1": 100, "gtb800-2": 200 }) +
+        line("2026-09-08T00:40:00Z", 300, 52, "charge", { "gtb800-1": 120, "gtb800-2": 180 }),
+    });
+    await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
+    const s = await readMonth(dir, "2026-09");
+    assert.deepEqual(s.hours[0].panels, { "gtb800-1": [220, 2], "gtb800-2": [380, 2] });
+    // Unaffected: the total is still folded from totalSolarWatts, independent
+    // of whatever panel breakdown happens to be attached to the same record.
+    assert.deepEqual(s.hours[0].solar, [600, 2]);
+  });
+
+  test("a record with no panel breakdown (older data) folds fine without one", async () => {
+    const dir = await fixture({
+      "history-2026-09-08.jsonl": line("2026-09-08T00:10:00Z", 100, 50, "charge"),
+    });
+    await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
+    const s = await readMonth(dir, "2026-09");
+    assert.equal(s.hours[0].panels, undefined);
+    assert.deepEqual(s.hours[0].solar, [100, 1]);
+  });
+
+  test("a panel missing from one cycle does not drag its average down", async () => {
+    // gtb800-2 went stale in the second cycle and was simply absent, per the
+    // port's contract - not present at 0.
+    const dir = await fixture({
+      "history-2026-09-08.jsonl":
+        line("2026-09-08T00:10:00Z", 300, 50, "charge", { "gtb800-1": 100, "gtb800-2": 200 }) +
+        line("2026-09-08T00:40:00Z", 100, 52, "charge", { "gtb800-1": 100 }),
+    });
+    await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
+    const s = await readMonth(dir, "2026-09");
+    assert.deepEqual(s.hours[0].panels, { "gtb800-1": [200, 2], "gtb800-2": [200, 1] });
   });
 
   test("running twice folds nothing twice", async () => {

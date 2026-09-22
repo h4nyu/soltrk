@@ -24,6 +24,7 @@ const series = (solar: (number | null)[], deviceAcIn: (number | null)[][] = []):
     target: solar.map(() => null),
     mode: solar.map(() => null),
   })),
+  panels: [],
 });
 
 describe("energyOf", () => {
