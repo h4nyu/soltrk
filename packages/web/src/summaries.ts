@@ -27,6 +27,10 @@ type Hour = {
   acOut?: Acc;
   bal?: Acc;
   dev?: DeviceHour[];
+  /** Keyed directly by panel name, matching how the writer stores it (see
+   *  cli/summary.ts) - there is no positional device-style registry for
+   *  panels, since a panel's name already is its identity. */
+  panels?: Record<string, Acc>;
 };
 
 type MonthFile = {
@@ -126,6 +130,10 @@ export const SummaryStore = (props: { dataDir: string }) => {
           if (isAcc(d.tgt)) b.addDevice(meta, "target", i, d.tgt[0], d.tgt[1]);
           for (const [mode, n] of Object.entries(d.m ?? {})) b.addMode(meta, mode, i, n);
         });
+
+        for (const [name, acc] of Object.entries(h.panels ?? {})) {
+          if (isAcc(acc)) b.addPanel(name, i, acc[0], acc[1]);
+        }
       }
     }
   };

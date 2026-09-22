@@ -13,10 +13,17 @@ const month = (hours: unknown[], devices = [{ sn: "A", name: "冷蔵庫" }]) =>
   JSON.stringify({ month: "2026-08", timeZone: "Asia/Tokyo", days: [], devices, hours });
 
 /** One hour standing for `n` cycles averaging `avg` watts of solar. */
-const hour = (offsetH: number, avg: number, n: number, dev?: unknown[]) => ({
+const hour = (
+  offsetH: number,
+  avg: number,
+  n: number,
+  dev?: unknown[],
+  panels?: Record<string, [number, number]>,
+) => ({
   t: T0 + offsetH * HOUR,
   solar: [avg * n, n],
   dev: dev ?? [{ soc: [50 * n, n], m: { passthrough: n } }],
+  panels,
 });
 
 async function fixture(files: Record<string, string>) {
@@ -103,5 +110,31 @@ describe("SummaryStore", () => {
     const s = b.finish();
     assert.equal(s.devices.length, 1);
     assert.deepEqual(s.devices[0].soc, [50]);
+  });
+
+  test("contributes per-panel hourly wattage, keyed directly by name", async () => {
+    const { store } = await fixture({
+      "2026-08.json": month([
+        hour(0, 300, 10, undefined, { "gtb800-1": [1000, 10], "gtb800-2": [2000, 10] }),
+      ]),
+    });
+    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
+    store.contribute(b, Number.POSITIVE_INFINITY);
+    const s = b.finish();
+    assert.deepEqual(
+      s.panels.map((p) => p.name),
+      ["gtb800-1", "gtb800-2"],
+    );
+    assert.deepEqual(s.panels[0].watts, [100]);
+    assert.deepEqual(s.panels[1].watts, [200]);
+  });
+
+  test("an hour with no panel breakdown at all still contributes its total", async () => {
+    const { store } = await fixture({ "2026-08.json": month([hour(0, 100, 10)]) });
+    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
+    store.contribute(b, Number.POSITIVE_INFINITY);
+    const s = b.finish();
+    assert.deepEqual(s.panels, []);
+    assert.deepEqual(s.solar, [100]);
   });
 });

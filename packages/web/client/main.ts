@@ -20,6 +20,10 @@ type Series = {
     target: (number | null)[];
     mode: (string | null)[];
   }[];
+  panels: {
+    name: string;
+    watts: (number | null)[];
+  }[];
   available: { from: number; to: number } | null;
   sampleCount: number;
   /** Where the raw 30s log starts; anything before it came from a summary. */
@@ -421,6 +425,24 @@ const buildCharts = (s: Series): void => {
     { unit: "W", zeroLine: true },
   );
 
+  // Absent rather than empty when nothing has reported a breakdown yet -
+  // either this range predates per-panel tracking, or the loop hasn't been
+  // restarted onto it - so there is no line with literally nothing in it.
+  if (s.panels.length > 0) {
+    makeChart(
+      host,
+      "パネルごとの発電",
+      "各インバーターの実測出力。合計が上の「発電」になる。",
+      xs,
+      s.panels.map((pn, i) => ({
+        label: pn.name,
+        data: pn.watts,
+        color: css(DEVICE_STROKES[i % DEVICE_STROKES.length]),
+      })),
+      { unit: "W" },
+    );
+  }
+
   makeChart(
     host,
     "バッテリー残量",
@@ -530,7 +552,7 @@ const refreshHistory = async (): Promise<void> => {
     return;
   }
   currentSeries = s;
-  const key = `${hours}:${s.devices.map((d) => d.sn).join(",")}`;
+  const key = `${hours}:${s.devices.map((d) => d.sn).join(",")}:${s.panels.map((pn) => pn.name).join(",")}`;
   if (key !== builtFor || charts.length === 0) {
     builtFor = key;
     buildCharts(s);

@@ -6,6 +6,15 @@
 export type SolarSource = {
   connect(): Promise<void>;
   disconnect(): void;
-  /** Latest known total watts across all panels; 0 if nothing fresh is known. */
-  getTotalWatts(): number;
+  /**
+   * Latest known watts per panel, keyed by its configured name. A panel is
+   * simply absent from the result rather than present at 0 when it has
+   * never reported anything, or when its reading has gone stale - see the
+   * adapter for why a frozen old value is worse than nothing. The total
+   * across all panels is this object's values summed, so there is exactly
+   * one place (the adapter) deciding which readings are fresh enough to
+   * count, rather than that judgment being duplicated between a total and
+   * a breakdown and risking the two disagreeing.
+   */
+  getWattsByPanel(): Record<string, number>;
 };

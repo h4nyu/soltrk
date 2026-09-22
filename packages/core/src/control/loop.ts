@@ -9,6 +9,14 @@ import { readDevices } from "./devices";
 export type StateSnapshot = {
   timestamp: string;
   totalSolarWatts: number;
+  // Breakdown of totalSolarWatts by panel, straight from SolarSource - see
+  // its port doc for the freshness rule (a panel with no fresh reading this
+  // cycle is simply absent, not present at 0). Kept alongside the total
+  // rather than replacing it: every existing consumer of totalSolarWatts
+  // (the allocator, the dashboard's balance/savings math) is unaffected by
+  // adding this, and would have to change if the total were removed in
+  // favour of re-summing this on every read.
+  solarByPanel: Record<string, number>;
   // Sum of every battery's measured AC input this cycle.
   totalAcInputWatts: number;
   // Sum of every battery's measured AC output (household load passthrough)
@@ -100,7 +108,8 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const sns = deviceEntries.map((e) => e.sn);
     const nameBySn = Object.fromEntries(deviceEntries.map((e) => [e.sn, e.name]));
     const vendorBySn = Object.fromEntries(deviceEntries.map((e) => [e.sn, e.vendor ?? "anker"]));
-    const totalWatts = solar.getTotalWatts();
+    const solarByPanel = solar.getWattsByPanel();
+    const totalWatts = Object.values(solarByPanel).reduce((sum, w) => sum + w, 0);
 
     const statusBySn: Record<string, Result<BatteryStatus>> = {};
     for (const sn of sns) {
@@ -184,6 +193,7 @@ export async function runLoop(deps: LoopDeps): Promise<void> {
     const snapshot: StateSnapshot = {
       timestamp: new Date().toISOString(),
       totalSolarWatts: totalWatts,
+      solarByPanel,
       totalAcInputWatts,
       totalAcOutputWatts,
       balanceWatts,
