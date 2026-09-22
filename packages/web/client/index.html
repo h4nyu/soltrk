@@ -23,13 +23,24 @@
   <body>
     <header>
       <h1>soltrk</h1>
-      <nav id="ranges"></nav>
+      <nav id="tabs"></nav>
       <span id="updated"></span>
     </header>
-    <section id="now" class="cards"></section>
-    <section id="savings" class="cards savings"></section>
-    <main id="charts"></main>
-    <footer id="meta"></footer>
+    <section id="tab-now">
+      <section id="now" class="cards"></section>
+      <section id="savings" class="cards savings"></section>
+    </section>
+    <section id="tab-history" hidden>
+      <div id="seek" class="seek">
+        <div id="seek-chart"></div>
+        <div id="seek-window" class="seek-window">
+          <div id="seek-handle-left" class="handle left"></div>
+          <div id="seek-handle-right" class="handle right"></div>
+        </div>
+      </div>
+      <main id="charts"></main>
+      <footer id="meta"></footer>
+    </section>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

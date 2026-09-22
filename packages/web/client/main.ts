@@ -57,17 +57,20 @@ type State = {
   devices?: StateDevice[];
 };
 
-const RANGES: { label: string; hours: number }[] = [
-  { label: "6時間", hours: 6 },
-  { label: "24時間", hours: 24 },
-  { label: "3日", hours: 72 },
-  { label: "7日", hours: 168 },
-  { label: "30日", hours: 720 },
-  // Beyond the raw retention window these are served from the monthly
-  // summaries, at one point per hour - still finer than the buckets at this
-  // zoom, so the charts look no different.
-  { label: "3ヶ月", hours: 2160 },
-  { label: "1年", hours: 8760 },
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+/** The seek bar never looks back further than this, regardless of how much
+ *  history the Pi is holding - a deliberate cap, not the retention window. */
+const OVERVIEW_SPAN_MS = 30 * DAY_MS;
+/** Width of the selection window when the page first loads. */
+const DEFAULT_WINDOW_MS = DAY_MS;
+/** Can't drag a handle past this - a window narrower than a few buckets'
+ *  worth of the finest resolution would just show noise. */
+const MIN_WINDOW_MS = 10 * 60_000;
+
+const TABS: { id: "now" | "history"; label: string }[] = [
+  { id: "now", label: "現在" },
+  { id: "history", label: "履歴" },
 ];
 
 const MODE_COLOR: Record<string, string> = {
@@ -83,7 +86,11 @@ const css = (name: string): string =>
 
 const DEVICE_STROKES = ["--soc", "--solar", "--export", "--import"];
 
-let hours = 24;
+let activeTab: "now" | "history" = "now";
+/** The detail charts' currently selected window - what the seek bar's box
+ *  spans, and what /api/history is asked for. */
+let selFrom = Date.now() - DEFAULT_WINDOW_MS;
+let selTo = Date.now();
 const charts: uPlot[] = [];
 /** The most recent history response, shared with the mode strips' repaint. */
 let currentSeries: Series | undefined;
@@ -104,17 +111,23 @@ const fmtW = (w: number | null | undefined): string =>
 
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
-const renderRanges = (): void => {
-  const nav = el("ranges");
+const renderTabs = (): void => {
+  const nav = el("tabs");
   nav.replaceChildren(
-    ...RANGES.map((r) => {
+    ...TABS.map((t) => {
       const b = document.createElement("button");
-      b.textContent = r.label;
-      b.setAttribute("aria-pressed", String(r.hours === hours));
+      b.textContent = t.label;
+      b.setAttribute("aria-pressed", String(t.id === activeTab));
       b.addEventListener("click", () => {
-        hours = r.hours;
-        renderRanges();
-        void refreshHistory();
+        activeTab = t.id;
+        renderTabs();
+        el("tab-now").hidden = activeTab !== "now";
+        el("tab-history").hidden = activeTab !== "history";
+        // Nothing to resize by hand: every chart here already has a
+        // ResizeObserver on its container (see makeChart / buildOverview),
+        // and going from `hidden` to visible is itself a resize those fire
+        // on - same mechanism that keeps them correctly sized on a window
+        // resize.
       });
       return b;
     }),
@@ -239,7 +252,11 @@ const makeChart = (
     width: plot.clientWidth || 800,
     height: 200,
     padding: [8, 8, 0, 0],
-    cursor: { drag: { x: true, y: false } },
+    // No drag-to-zoom here: the seek bar is now the one control that picks
+    // what span is fetched and shown, so an independent in-chart zoom on top
+    // of it would just be a second, conflicting way to do the same thing.
+    // The hover crosshair and its legend (uPlot's default) stay on.
+    cursor: { drag: { x: false, y: false } },
     scales: { x: { time: true } },
     axes: [
       { stroke: css("--muted"), grid: { stroke: css("--line") }, ticks: { stroke: css("--line") } },
@@ -385,6 +402,148 @@ const makeModeStrips = (host: HTMLElement, s: Series): void => {
 };
 
 /**
+ * The seek bar: a month-long solar sparkline with a draggable, resizable
+ * window over it (the same idea as a stock chart's range brush), which picks
+ * the span the detail charts below it are fetched for.
+ */
+let overviewChart: uPlot | undefined;
+let overviewBounds = { from: Date.now() - OVERVIEW_SPAN_MS, to: Date.now() };
+/** True while the window's right edge tracks "now" rather than sitting where
+ *  the reader dragged it back to - mirrors the old range-button behaviour of
+ *  following the live edge unless the reader had zoomed into the past. */
+let followLive = true;
+/** How much slack counts as "still at the live edge" - without this, the
+ *  window would read as "not live" the instant any real time elapsed after a
+ *  drag, since selTo is a fixed instant and the clock keeps moving. */
+const LIVE_EDGE_SLACK_MS = 2 * 60_000;
+
+const buildOverview = (s: Series): void => {
+  const host = el("seek-chart");
+  overviewChart?.destroy();
+  const xs = s.t.map((ms) => ms / 1000);
+  const config: uPlot.Options = {
+    width: host.clientWidth || 800,
+    height: 56,
+    padding: [4, 0, 0, 0],
+    cursor: { show: false },
+    legend: { show: false },
+    scales: { x: { time: true } },
+    axes: [
+      {
+        stroke: css("--muted"),
+        grid: { show: false },
+        ticks: { show: false },
+        size: 16,
+        values: (_u, vals) =>
+          vals.map((v) => new Date(v * 1000).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })),
+      },
+      { show: false }, // no unit on a sparkline - only the shape matters here
+    ],
+    series: [{}, { stroke: css("--solar"), width: 1.3, spanGaps: true }],
+    hooks: { setSize: [layoutSeekWindow], ready: [layoutSeekWindow] },
+  };
+  overviewChart = new uPlot(config, [xs, s.solar] as unknown as uPlot.AlignedData, host);
+  new ResizeObserver(() => overviewChart?.setSize({ width: host.clientWidth, height: 56 })).observe(host);
+
+  overviewBounds = s.available
+    ? { from: Math.max(s.available.from, Date.now() - OVERVIEW_SPAN_MS), to: s.available.to }
+    : overviewBounds;
+  selFrom = Math.max(overviewBounds.from, Math.min(selFrom, overviewBounds.to - MIN_WINDOW_MS));
+  selTo = Math.min(overviewBounds.to, Math.max(selTo, selFrom + MIN_WINDOW_MS));
+  layoutSeekWindow();
+};
+
+/** Positions the #seek-window overlay to match [selFrom, selTo] in pixels. */
+function layoutSeekWindow(): void {
+  if (!overviewChart) return;
+  const win = el("seek-window");
+  const seek = el("seek");
+  const overRect = overviewChart.over.getBoundingClientRect();
+  const seekRect = seek.getBoundingClientRect();
+  const offsetX = overRect.left - seekRect.left;
+  const x1 = overviewChart.valToPos(selFrom / 1000, "x");
+  const x2 = overviewChart.valToPos(selTo / 1000, "x");
+  win.style.left = `${offsetX + x1}px`;
+  win.style.width = `${Math.max(4, x2 - x1)}px`;
+}
+
+/** Milliseconds represented by one CSS pixel of the overview's x-axis - the
+ *  scale's slope, which is independent of where its plot area actually sits
+ *  on screen, so drag deltas don't need the plot's own pixel origin at all. */
+const msPerPx = (): number => {
+  if (!overviewChart) return 0;
+  const t0 = overviewChart.posToVal(0, "x");
+  const t1 = overviewChart.posToVal(100, "x");
+  return ((t1 - t0) * 1000) / 100;
+};
+
+type DragMode = "pan" | "left" | "right";
+let drag: { mode: DragMode; startClientX: number; startFrom: number; startTo: number } | undefined;
+
+const onSeekPointerMove = (e: PointerEvent): void => {
+  if (!drag) return;
+  const dxMs = (e.clientX - drag.startClientX) * msPerPx();
+  if (drag.mode === "pan") {
+    const width = drag.startTo - drag.startFrom;
+    let from = drag.startFrom + dxMs;
+    let to = drag.startTo + dxMs;
+    if (from < overviewBounds.from) {
+      from = overviewBounds.from;
+      to = from + width;
+    }
+    if (to > overviewBounds.to) {
+      to = overviewBounds.to;
+      from = to - width;
+    }
+    selFrom = from;
+    selTo = to;
+  } else if (drag.mode === "left") {
+    selFrom = Math.max(overviewBounds.from, Math.min(drag.startFrom + dxMs, selTo - MIN_WINDOW_MS));
+  } else {
+    selTo = Math.min(overviewBounds.to, Math.max(drag.startTo + dxMs, selFrom + MIN_WINDOW_MS));
+  }
+  layoutSeekWindow();
+};
+
+const onSeekPointerUp = (): void => {
+  if (!drag) return;
+  drag = undefined;
+  followLive = overviewBounds.to - selTo < LIVE_EDGE_SLACK_MS;
+  void refreshHistory();
+};
+
+/** Wires one drag surface (the window body, or an edge handle) to a mode.
+ *  `stop` prevents a handle's pointerdown from also bubbling up into the
+ *  window body's own "pan" handler - a grab on the edge must mean resize,
+ *  not resize-and-pan-at-once. */
+const bindSeekDrag = (target: HTMLElement, mode: DragMode, stop: boolean): void => {
+  target.addEventListener("pointerdown", (e) => {
+    if (stop) e.stopPropagation();
+    e.preventDefault();
+    target.setPointerCapture(e.pointerId);
+    drag = { mode, startClientX: e.clientX, startFrom: selFrom, startTo: selTo };
+  });
+  target.addEventListener("pointermove", onSeekPointerMove);
+  target.addEventListener("pointerup", onSeekPointerUp);
+  target.addEventListener("pointercancel", onSeekPointerUp);
+};
+
+bindSeekDrag(el("seek-window"), "pan", false);
+bindSeekDrag(el("seek-handle-left"), "left", true);
+bindSeekDrag(el("seek-handle-right"), "right", true);
+
+const refreshOverview = async (): Promise<void> => {
+  try {
+    const to = Date.now();
+    const from = to - OVERVIEW_SPAN_MS;
+    const s = (await fetch(`/api/history?from=${from}&to=${to}&buckets=240`).then((r) => r.json())) as Series;
+    buildOverview(s);
+  } catch (err) {
+    console.error("[soltrk] overview refresh failed", err);
+  }
+};
+
+/**
  * The control loop's own period. state.json is rewritten once per cycle and
  * the solar readings behind it arrive on the same 30s beat, so polling faster
  * returns identical bytes.
@@ -392,6 +551,9 @@ const makeModeStrips = (host: HTMLElement, s: Series): void => {
 const STATE_POLL_MS = 30_000;
 /** However wide the buckets get, check back at least this often. */
 const HISTORY_POLL_MAX_MS = 10 * 60_000;
+/** The overview is a coarse 30-day sparkline - nothing is lost by checking
+ *  back on it far less often than the detail charts. */
+const OVERVIEW_POLL_MS = 5 * 60_000;
 
 /** Columnar data for each chart, in the order buildCharts creates them. */
 const seriesData = (s: Series): uPlot.AlignedData[] => {
@@ -481,25 +643,19 @@ const buildCharts = (s: Series): void => {
 };
 
 /**
- * Push new numbers into the existing charts rather than rebuilding them. The
- * page is meant to be left open, and a rebuild every cycle threw away whatever
- * range the reader had dragged out, on top of flickering.
+ * Push new numbers into the existing charts rather than rebuilding them - a
+ * rebuild every cycle would flicker and, before the seek bar existed, threw
+ * away an in-chart zoom the reader had dragged out by hand. There is no
+ * in-chart zoom to preserve any more (the seek bar is the one thing that
+ * picks the span), so every update resets the x-scale to whatever span was
+ * just fetched.
  */
 const updateCharts = (s: Series): void => {
   const data = seriesData(s);
   charts.forEach((u, i) => {
     const d = data[i];
     if (d === undefined) return;
-    const xs = d[0] as number[];
-    // Follow the live edge only while the view still spans the whole series;
-    // once the reader has zoomed in, keep their window.
-    const atFullExtent =
-      xs.length > 0 &&
-      u.scales.x.min !== undefined &&
-      u.scales.x.max !== undefined &&
-      u.scales.x.min <= xs[0] &&
-      u.scales.x.max >= xs[xs.length - 1];
-    u.setData(d, atFullExtent);
+    u.setData(d, true);
   });
   repaintStrips();
 };
@@ -510,20 +666,20 @@ const renderMeta = (s: Series): void => {
     el("meta").textContent = "履歴なし";
     return;
   }
-  const d = (t: number) => new Date(t).toLocaleDateString("ja-JP");
+  const dt = (t: number) => new Date(t).toLocaleString("ja-JP");
   const bucket =
     s.bucketMs >= 3_600_000
       ? `${(s.bucketMs / 3_600_000).toFixed(1)}時間`
       : `${Math.round(s.bucketMs / 1000)}秒`;
   const parts = [
-    `記録期間 ${d(av.from)} 〜 ${d(av.to)}`,
-    `${s.sampleCount.toLocaleString()} サイクル`,
+    `表示中 ${dt(s.from)} 〜 ${dt(s.to)}`,
     `バケット ${bucket}`,
+    `記録は ${new Date(av.from).toLocaleDateString("ja-JP")} から (${s.sampleCount.toLocaleString()} サイクル)`,
   ];
   // Say plainly where the numbers stop being individual cycles, so nobody
   // reads an hourly average as if it were 30-second data.
   if (s.rawFrom !== null && s.from < s.rawFrom) {
-    parts.push(`${d(s.rawFrom)} より前は月次サマリー(1時間平均)`);
+    parts.push(`${new Date(s.rawFrom).toLocaleDateString("ja-JP")} より前は月次サマリー(1時間平均)`);
   }
   el("meta").textContent = parts.join(" / ");
 };
@@ -536,23 +692,39 @@ const scheduleHistory = (bucketMs: number): void => {
   if (historyTimer !== undefined) clearTimeout(historyTimer);
   // A bucket cannot change faster than it is wide, so re-querying sooner just
   // re-sends identical numbers - and makes the Pi rescan the whole file to do
-  // it. The 30-day view has 72-minute buckets; the 6-hour view lands on the
-  // control period, which is the floor.
+  // it. A month-wide window has 72-minute buckets; a few-hours-wide one lands
+  // on the control period, which is the floor.
   const delay = Math.min(HISTORY_POLL_MAX_MS, Math.max(STATE_POLL_MS, bucketMs));
-  historyTimer = window.setTimeout(() => void refreshHistory(), delay);
+  historyTimer = window.setTimeout(() => {
+    // Keep the window's width but slide it to the live edge - the seek-bar
+    // equivalent of the old range buttons' "always shows up to now" behaviour
+    // - but only while the reader hasn't dragged it back into the past.
+    if (followLive) {
+      const width = selTo - selFrom;
+      selTo = Date.now();
+      selFrom = selTo - width;
+      layoutSeekWindow();
+    }
+    void refreshHistory();
+  }, delay);
 };
 
 const refreshHistory = async (): Promise<void> => {
   let s: Series;
   try {
-    s = (await fetch(`/api/history?hours=${hours}&buckets=600`).then((r) => r.json())) as Series;
+    s = (await fetch(`/api/history?from=${Math.round(selFrom)}&to=${Math.round(selTo)}&buckets=600`).then((r) =>
+      r.json(),
+    )) as Series;
   } catch (err) {
     console.error("[soltrk] history refresh failed", err);
     scheduleHistory(STATE_POLL_MS);
     return;
   }
   currentSeries = s;
-  const key = `${hours}:${s.devices.map((d) => d.sn).join(",")}:${s.panels.map((pn) => pn.name).join(",")}`;
+  // Only the device/panel set forces a rebuild now - the seek bar changes
+  // which span is fetched, not the shape of what's plotted, so a drag is
+  // just new data for the same chart instances (see updateCharts).
+  const key = `${s.devices.map((d) => d.sn).join(",")}:${s.panels.map((pn) => pn.name).join(",")}`;
   if (key !== builtFor || charts.length === 0) {
     builtFor = key;
     buildCharts(s);
@@ -578,7 +750,9 @@ const refreshState = async (): Promise<void> => {
   }
 };
 
-renderRanges();
+renderTabs();
 void refreshState();
+void refreshOverview();
 void refreshHistory();
 setInterval(() => void refreshState(), STATE_POLL_MS);
+setInterval(() => void refreshOverview(), OVERVIEW_POLL_MS);

@@ -87,3 +87,28 @@ footer { color: var(--muted); font-size: 12px;
   padding: 0 max(18px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom))
            max(18px, env(safe-area-inset-left)); }
 .uplot { font-family: inherit !important; }
+
+/* Seek bar: a compressed month-long overview with a draggable, resizable
+   window over it, like a stock-chart's range brush. touch-action:none stops
+   the page itself from scrolling while a finger is dragging the window or a
+   handle - without it, iOS interprets the drag as a page scroll instead. */
+.seek {
+  position: relative;
+  margin: 0 max(18px, env(safe-area-inset-right)) 14px max(18px, env(safe-area-inset-left));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px 0 0;
+}
+#seek-chart { height: 56px; }
+.seek-window {
+  position: absolute; top: 0; height: 56px;
+  background: color-mix(in srgb, var(--soc) 18%, transparent);
+  border-left: 2px solid var(--soc); border-right: 2px solid var(--soc);
+  cursor: grab; touch-action: none;
+}
+.seek-window:active { cursor: grabbing; }
+.seek-window .handle {
+  position: absolute; top: 0; bottom: 0; width: 22px; cursor: ew-resize; touch-action: none;
+}
+/* Wider than the visible border so a finger has real room to grab it. */
+.seek-window .handle.left { left: -11px; }
+.seek-window .handle.right { right: -11px; }
