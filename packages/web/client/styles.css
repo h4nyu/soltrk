@@ -57,6 +57,10 @@ nav button[aria-pressed="true"] { background: var(--ink); color: var(--panel); b
   padding: 14px max(18px, env(safe-area-inset-right)) 14px max(18px, env(safe-area-inset-left)); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .card .k { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+/* Ties a panel's card to its line colour in the "パネルごとの発電" chart -
+   same swatch style as the mode-strip legend, just inline before the label
+   instead of after a whole legend row. */
+.card .k .dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; margin-right: 5px; vertical-align: 1px; }
 .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
 .card .s { color: var(--muted); font-size: 12px; }
 /* The savings row is a footnote to the live cards above it, not a peer: same

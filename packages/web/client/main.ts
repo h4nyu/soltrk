@@ -53,6 +53,7 @@ type Totals = { generatedKwh: number; usedKwh: number; yen: number };
 type State = {
   timestamp: string;
   totalSolarWatts?: number;
+  solarByPanel?: Record<string, number>;
   balanceWatts?: number;
   devices?: StateDevice[];
 };
@@ -194,6 +195,18 @@ const flows = (state: State) => {
   return { used, charging, discharging, remaining };
 };
 
+/**
+ * Panel names seen in any /api/state response so far this page load. A panel
+ * is simply absent from solarByPanel when it hasn't reported this cycle
+ * (never present at 0 - see SolarSource's port doc), which during e.g. a
+ * wifi dropout would otherwise make the card row silently shrink to "there is
+ * only one panel" instead of showing the missing one as unreachable. There is
+ * no registry endpoint to seed this from up front, so it starts empty and
+ * only grows - a panel that has never reported since the page opened stays
+ * unlisted, same as it already isn't counted in the total.
+ */
+const knownPanels = new Set<string>();
+
 const renderNow = (state: State): void => {
   const cards: string[] = [];
   const f = flows(state);
@@ -202,8 +215,18 @@ const renderNow = (state: State): void => {
     `<div class="v"${colour ? ` style="color:${colour}"` : ""}>${v}</div>` +
     `<div class="s">${sub}</div></div>`;
 
+  cards.push(card("発電", fmtW(state.totalSolarWatts), ""));
+  // One card per inverter, right after the total it's a breakdown of.
+  for (const name of Object.keys(state.solarByPanel ?? {})) knownPanels.add(name);
+  [...knownPanels].forEach((name, i) => {
+    const watts = state.solarByPanel?.[name];
+    cards.push(
+      `<div class="card"><div class="k"><i class="dot" style="background:${css(DEVICE_STROKES[i % DEVICE_STROKES.length])}"></i>${name}</div>` +
+        `<div class="v">${fmtW(watts)}</div>` +
+        `<div class="s">${watts === undefined ? "応答なし" : ""}</div></div>`,
+    );
+  });
   cards.push(
-    card("発電", fmtW(state.totalSolarWatts), ""),
     card("使用量", fmtW(f.used), "3台につないだ負荷"),
     // acIn - acOut includes the ~33W the charger loses as heat, so this is what
     // went into the units rather than what ended up stored.
