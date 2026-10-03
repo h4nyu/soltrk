@@ -196,16 +196,22 @@ const flows = (state: State) => {
 };
 
 /**
- * Panel names seen in any /api/state response so far this page load. A panel
- * is simply absent from solarByPanel when it hasn't reported this cycle
- * (never present at 0 - see SolarSource's port doc), which during e.g. a
- * wifi dropout would otherwise make the card row silently shrink to "there is
- * only one panel" instead of showing the missing one as unreachable. There is
- * no registry endpoint to seed this from up front, so it starts empty and
- * only grows - a panel that has never reported since the page opened stays
- * unlisted, same as it already isn't counted in the total.
+ * Every panel name this page has heard of, in first-seen order - which is also
+ * the order the history chart colours them in, so a panel's card and its line
+ * share a dot colour.
+ *
+ * Seeded from the 30-day history (see refreshOverview), not just from live
+ * state. solarByPanel only carries panels that reported this cycle, so a panel
+ * that has dropped off would otherwise be absent entirely on a fresh page load
+ * and read as "there is only one panel" rather than "one panel is unreachable".
  */
-const knownPanels = new Set<string>();
+const knownPanels: string[] = [];
+/** Last state payload, kept so the cards can be redrawn once history adds a
+ *  panel the live state didn't mention. */
+let lastState: State | undefined;
+const noteKnownPanels = (names: Iterable<string>): void => {
+  for (const name of names) if (!knownPanels.includes(name)) knownPanels.push(name);
+};
 
 const renderNow = (state: State): void => {
   const f = flows(state);
@@ -218,8 +224,8 @@ const renderNow = (state: State): void => {
   // rather than one long row where a generation figure sits next to a
   // battery figure with nothing marking the seam between them.
   const panelCards: string[] = [card("発電", fmtW(state.totalSolarWatts), "")];
-  for (const name of Object.keys(state.solarByPanel ?? {})) knownPanels.add(name);
-  [...knownPanels].forEach((name, i) => {
+  noteKnownPanels(Object.keys(state.solarByPanel ?? {}));
+  knownPanels.forEach((name, i) => {
     const watts = state.solarByPanel?.[name];
     panelCards.push(
       `<div class="card"><div class="k"><i class="dot" style="background:${css(DEVICE_STROKES[i % DEVICE_STROKES.length])}"></i>${name}</div>` +
@@ -565,8 +571,16 @@ const refreshOverview = async (): Promise<void> => {
     const from = to - OVERVIEW_SPAN_MS;
     const s = (await fetch(`/api/history?from=${from}&to=${to}&buckets=240`).then((r) => r.json())) as Series;
     buildOverview(s);
+    // Seed the roster from the same 30 days the overview covers, then redraw
+    // the cards so a panel that is down right now shows as 応答なし.
+    noteKnownPanels(s.panels.map((pn) => pn.name));
+    if (lastState) renderNow(lastState);
   } catch (err) {
     console.error("[soltrk] overview refresh failed", err);
+    // This is also what seeds the panel roster, so a failure here at startup
+    // would leave a dropped panel unlisted until the next 5-minute tick. Retry
+    // on the state cadence instead.
+    setTimeout(() => void refreshOverview(), STATE_POLL_MS);
   }
 };
 
@@ -764,7 +778,8 @@ const refreshHistory = async (): Promise<void> => {
 
 const refreshState = async (): Promise<void> => {
   try {
-    renderNow((await fetch("/api/state").then((r) => r.json())) as State);
+    lastState = (await fetch("/api/state").then((r) => r.json())) as State;
+    renderNow(lastState);
   } catch (err) {
     console.error("[soltrk] state refresh failed", err);
   }
