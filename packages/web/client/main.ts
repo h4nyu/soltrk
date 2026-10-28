@@ -770,9 +770,9 @@ const renderMeta = (s: Series, selected: Totals | null): void => {
     `記録は ${new Date(av.from).toLocaleDateString("ja-JP")} から (${s.sampleCount.toLocaleString()} サイクル)`,
   ];
   // Say plainly where the numbers stop being individual cycles, so nobody
-  // reads an hourly average as if it were 30-second data.
+  // reads a flattened daily average as if it were 30-second data.
   if (s.rawFrom !== null && s.from < s.rawFrom) {
-    parts.push(`${new Date(s.rawFrom).toLocaleDateString("ja-JP")} より前は月次サマリー(1時間平均)`);
+    parts.push(`${new Date(s.rawFrom).toLocaleDateString("ja-JP")} より前は月次サマリー(日次平均)`);
   }
   // The watts charts above already show the shape; this is the one place the
   // selected range's total value in yen shows up.
