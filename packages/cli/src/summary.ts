@@ -2,7 +2,6 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:
 import { join } from "node:path";
 import { dayKeyFormatter, HISTORY_FILE_RE, resolvedTimeZone } from "./history";
 
-const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
 /** A running total and the number of samples in it, so aggregates compose. */
@@ -11,29 +10,24 @@ type Acc = [sum: number, count: number];
 const add = (a: Acc | undefined, v: number | undefined): Acc | undefined =>
   v === undefined ? a : a === undefined ? [v, 1] : [a[0] + v, a[1] + 1];
 
-export type DeviceHour = {
-  soc?: Acc;
-  acIn?: Acc;
-  acOut?: Acc;
-  tgt?: Acc;
-  /** Cycles seen in each AC mode; the dominant one is whichever counted most. */
-  m?: Record<string, number>;
-};
-
-export type Hour = {
-  /** Epoch ms of the hour start. A UTC instant, like every other value here. */
+/**
+ * One calendar day's totals - just enough to answer "how much did we
+ * generate / charge / use", not to redraw the day's shape. Per-device and
+ * per-panel breakdowns only exist in the raw logs (kept `retentionDays`),
+ * which is the detail a chart needs; past that window only these three
+ * aggregates - and the balance for free - survive, forever.
+ */
+export type Day = {
+  /** Epoch ms of (approximately) the day's local start - in practice the
+   *  first folded record's own timestamp, which is always within one cycle
+   *  of local midnight and so always falls on the right calendar day. A UTC
+   *  instant, like every other value here; only grouping records into this
+   *  bucket in the first place consults the timezone. */
   t: number;
   solar?: Acc;
   acIn?: Acc;
   acOut?: Acc;
   bal?: Acc;
-  /** Positional, aligned with the file's `devices` list. */
-  dev: DeviceHour[];
-  /** Keyed directly by panel name rather than a positional index like `dev`
-   *  is: there are only ever a couple of panels, their names are short, and
-   *  a panel has one figure (watts) rather than a battery's several, so the
-   *  indirection a device list buys isn't worth a second registry here. */
-  panels?: Record<string, Acc>;
 };
 
 export type MonthSummary = {
@@ -52,26 +46,15 @@ export type MonthSummary = {
    *  split across `history.jsonl` and `history-<day>.jsonl`; keyed by day, the
    *  second one to be folded would be skipped and its half of the day lost. */
   sources: string[];
-  devices: { sn: string; name: string }[];
-  hours: Hour[];
+  days: Day[];
 };
 
 type Rec = {
   timestamp?: string;
   totalSolarWatts?: number;
-  solarByPanel?: Record<string, number>;
   totalAcInputWatts?: number;
   totalAcOutputWatts?: number;
   balanceWatts?: number;
-  devices?: {
-    sn?: string;
-    name?: string;
-    batterySoc?: number;
-    acInputWatts?: number;
-    acOutputWatts?: number;
-    targetWatts?: number;
-    mode?: string;
-  }[];
 };
 
 /** Summaries live beside the raw logs they were derived from. */
@@ -84,8 +67,7 @@ const emptySummary = (month: string, timeZone: string): MonthSummary => ({
   timeZone,
   generatedAt: new Date().toISOString(),
   sources: [],
-  devices: [],
-  hours: [],
+  days: [],
 });
 
 const readSummary = async (
@@ -100,8 +82,7 @@ const readSummary = async (
       ...emptySummary(month, timeZone),
       ...parsed,
       sources: parsed.sources ?? [],
-      devices: parsed.devices ?? [],
-      hours: parsed.hours ?? [],
+      days: parsed.days ?? [],
     };
   } catch {
     return emptySummary(month, timeZone);
@@ -125,10 +106,12 @@ export const foldRecords = (
   lines: string[],
   source: string,
 ): { added: number; skipped: number } => {
-  const byHour = new Map<number, Hour>();
-  for (const h of summary.hours) byHour.set(h.t, h);
-  const deviceIndex = new Map<string, number>();
-  summary.devices.forEach((d, i) => deviceIndex.set(d.sn, i));
+  // Grouped by local calendar day, not a fixed-width UTC bucket like the old
+  // hourly fold used: a day boundary only means something in the timezone the
+  // rest of the system already uses it in (see dayKeyFormatter's own note).
+  const dayKey = dayKeyFormatter(summary.timeZone);
+  const byDay = new Map<string, Day>();
+  for (const d of summary.days) byDay.set(dayKey(new Date(d.t)), d);
 
   let added = 0;
   let skipped = 0;
@@ -146,53 +129,25 @@ export const foldRecords = (
       skipped += 1;
       continue;
     }
-    // Hour buckets are plain UTC instants; only the day and month a record is
-    // filed under consult the timezone, and that was decided by the caller.
-    const hourStart = Math.floor(t / HOUR_MS) * HOUR_MS;
-    let hour = byHour.get(hourStart);
-    if (hour === undefined) {
-      hour = { t: hourStart, dev: [] };
-      byHour.set(hourStart, hour);
+    const key = dayKey(new Date(t));
+    let day = byDay.get(key);
+    if (day === undefined) {
+      // `t` is this record's own timestamp rather than a computed local
+      // midnight: it is always within one cycle of it (the first record of a
+      // freshly-rotated daily file), which is close enough for a bucket whose
+      // job is only to land in the right calendar day, and needs no timezone
+      // arithmetic of its own to get there.
+      day = { t };
+      byDay.set(key, day);
     }
-    hour.solar = add(hour.solar, rec.totalSolarWatts);
-    hour.acIn = add(hour.acIn, rec.totalAcInputWatts);
-    hour.acOut = add(hour.acOut, rec.totalAcOutputWatts);
-    hour.bal = add(hour.bal, rec.balanceWatts);
-
-    for (const [name, watts] of Object.entries(rec.solarByPanel ?? {})) {
-      hour.panels = hour.panels ?? {};
-      // Not `add()`: watts here is always a real number (Object.entries never
-      // yields an undefined value), so the sum is never left as `undefined`
-      // the way add()'s general v-may-be-missing signature allows.
-      const prev = hour.panels[name];
-      hour.panels[name] = prev === undefined ? [watts, 1] : [prev[0] + watts, prev[1] + 1];
-    }
-
-    for (const d of rec.devices ?? []) {
-      if (!d.sn) continue;
-      let i = deviceIndex.get(d.sn);
-      if (i === undefined) {
-        i = summary.devices.length;
-        summary.devices.push({ sn: d.sn, name: d.name ?? d.sn });
-        deviceIndex.set(d.sn, i);
-      } else if (d.name && summary.devices[i].name !== d.name) {
-        summary.devices[i].name = d.name;
-      }
-      while (hour.dev.length <= i) hour.dev.push({});
-      const dh = hour.dev[i];
-      dh.soc = add(dh.soc, d.batterySoc);
-      dh.acIn = add(dh.acIn, d.acInputWatts);
-      dh.acOut = add(dh.acOut, d.acOutputWatts);
-      dh.tgt = add(dh.tgt, d.targetWatts);
-      if (d.mode) {
-        dh.m = dh.m ?? {};
-        dh.m[d.mode] = (dh.m[d.mode] ?? 0) + 1;
-      }
-    }
+    day.solar = add(day.solar, rec.totalSolarWatts);
+    day.acIn = add(day.acIn, rec.totalAcInputWatts);
+    day.acOut = add(day.acOut, rec.totalAcOutputWatts);
+    day.bal = add(day.bal, rec.balanceWatts);
     added += 1;
   }
 
-  summary.hours = [...byHour.values()].sort((a, b) => a.t - b.t);
+  summary.days = [...byDay.values()].sort((a, b) => a.t - b.t);
   if (added > 0 && !summary.sources.includes(source)) {
     summary.sources.push(source);
     summary.sources.sort();

@@ -123,3 +123,16 @@ footer { color: var(--muted); font-size: 12px;
 /* Wider than the visible border so a finger has real room to grab it. */
 .seek-window .handle.left { left: -11px; }
 .seek-window .handle.right { right: -11px; }
+
+/* Quick-select presets below the seek bar - same pill style as the tab nav,
+   just without an active/pressed state: these are one-shot jumps, not a
+   toggle between persistent views. */
+.seek-presets {
+  display: flex; gap: 6px;
+  margin: 8px max(18px, env(safe-area-inset-right)) 14px max(18px, env(safe-area-inset-left));
+}
+.seek-presets button {
+  font: inherit; padding: 5px 14px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--muted); cursor: pointer;
+}
+.seek-presets button:active { background: var(--line); }

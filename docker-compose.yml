@@ -111,7 +111,12 @@ services:
     environment:
       TZ: *TZ
       SUMMARIZE_CRON: ${SUMMARIZE_CRON:-0 3 * * *}
-      SUMMARIZE_RETENTION_DAYS: ${SUMMARIZE_RETENTION_DAYS:-60}
+      # How long raw per-cycle logs survive before deletion. Past this, a day
+      # only lives on as its three daily totals in data/summaries/ (see
+      # cli/summary.ts's `Day`) - no per-device or per-panel breakdown, and no
+      # intra-day shape - which is what the dashboard's charts beyond this
+      # window can still show.
+      SUMMARIZE_RETENTION_DAYS: ${SUMMARIZE_RETENTION_DAYS:-7}
     volumes:
       - ./data:/app/data
       - ./packages:/app/packages
@@ -142,10 +147,10 @@ services:
       # savings cards are local calendar boundaries.
       TZ: *TZ
       WEB_PORT: ${WEB_PORT:-8080}
-      # How much history is held in memory for the charts. The file is
-      # append-only and grows about 1MB/day, so this bounds the Pi's RAM use
-      # rather than the file itself.
-      WEB_RETENTION_DAYS: ${WEB_RETENTION_DAYS:-30}
+      # How much raw, per-cycle history is held in memory for the charts - kept
+      # equal to SUMMARIZE_RETENTION_DAYS above on the scheduler service, since
+      # there is no point asking for raw detail the files no longer have.
+      WEB_RETENTION_DAYS: ${WEB_RETENTION_DAYS:-7}
       # What a saved kilowatt-hour is worth. Use the *marginal* rate - the
       # per-kWh tariff step plus the fuel adjustment and the renewable levy -
       # not the bill divided by its kWh: a standing charge does not shrink when

@@ -25,19 +25,16 @@ describe("dayKeyFormatter", () => {
   });
 });
 
-const line = (
-  iso: string,
-  solar: number,
-  soc: number,
-  mode: string,
-  solarByPanel?: Record<string, number>,
-): string =>
+/** Extra fields a real record also carries (solarByPanel, devices) are
+ *  deliberately left out: summary.ts only keeps the three global totals now,
+ *  so a fixture for it has no reason to include detail it would just ignore. */
+const line = (iso: string, solar: number, acIn = 40, acOut = 0): string =>
   JSON.stringify({
     timestamp: iso,
     totalSolarWatts: solar,
-    solarByPanel,
-    balanceWatts: -10,
-    devices: [{ sn: "A", name: "冷蔵庫", batterySoc: soc, acInputWatts: 40, targetWatts: 30, mode }],
+    totalAcInputWatts: acIn,
+    totalAcOutputWatts: acOut,
+    balanceWatts: solar - acIn,
   }) + "\n";
 
 async function fixture(files: Record<string, string>) {
@@ -52,12 +49,10 @@ const readMonth = async (dir: string, month: string): Promise<MonthSummary> =>
 describe("summarize", () => {
   const now = new Date("2026-09-10T03:00:00Z"); // 12:00 JST on the 10th
 
-  test("folds a completed day into its month as sums and counts", async () => {
+  test("folds a completed day into its month as a single day's sums and counts", async () => {
     const dir = await fixture({
       "history-2026-09-08.jsonl":
-        line("2026-09-08T00:10:00Z", 100, 50, "charge") +
-        line("2026-09-08T00:40:00Z", 200, 52, "charge") +
-        line("2026-09-08T01:10:00Z", 300, 54, "passthrough"),
+        line("2026-09-08T00:10:00Z", 100) + line("2026-09-08T00:40:00Z", 200) + line("2026-09-08T01:10:00Z", 300),
     });
     const res = await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
     assert.deepEqual(
@@ -66,67 +61,65 @@ describe("summarize", () => {
     );
 
     const s = await readMonth(dir, "2026-09");
-    assert.equal(s.hours.length, 2);
-    // Sum and count, not a mean - so the hour can be re-averaged with others.
-    assert.deepEqual(s.hours[0].solar, [300, 2]);
-    assert.deepEqual(s.hours[1].solar, [300, 1]);
-    assert.deepEqual(s.hours[0].dev[0].m, { charge: 2 });
+    // All three cycles land on the same JST calendar day (09:10-10:10 JST),
+    // so one day's worth of entries, not one per hour.
+    assert.equal(s.days.length, 1);
+    // Sum and count, not a mean - so the day can be re-averaged with others.
+    assert.deepEqual(s.days[0].solar, [600, 3]);
     assert.deepEqual(s.sources, ["history-2026-09-08.jsonl"]);
     assert.equal(s.timeZone, TOKYO);
   });
 
-  test("folds per-panel solar as sums and counts, keyed by name", async () => {
+  test("splits records either side of local midnight, not UTC midnight", async () => {
+    // 23:30 and 00:30 JST - an hour apart, but on different calendar days in
+    // Tokyo despite both falling on 2026-09-08 in UTC.
     const dir = await fixture({
       "history-2026-09-08.jsonl":
-        line("2026-09-08T00:10:00Z", 300, 50, "charge", { "gtb800-1": 100, "gtb800-2": 200 }) +
-        line("2026-09-08T00:40:00Z", 300, 52, "charge", { "gtb800-1": 120, "gtb800-2": 180 }),
+        line("2026-09-08T14:30:00Z", 10) + line("2026-09-08T15:30:00Z", 20),
     });
     await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
     const s = await readMonth(dir, "2026-09");
-    assert.deepEqual(s.hours[0].panels, { "gtb800-1": [220, 2], "gtb800-2": [380, 2] });
-    // Unaffected: the total is still folded from totalSolarWatts, independent
-    // of whatever panel breakdown happens to be attached to the same record.
-    assert.deepEqual(s.hours[0].solar, [600, 2]);
+    assert.equal(s.days.length, 2);
+    assert.deepEqual(
+      s.days.map((d) => d.solar),
+      [[10, 1], [20, 1]],
+    );
   });
 
-  test("a record with no panel breakdown (older data) folds fine without one", async () => {
-    const dir = await fixture({
-      "history-2026-09-08.jsonl": line("2026-09-08T00:10:00Z", 100, 50, "charge"),
-    });
-    await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
-    const s = await readMonth(dir, "2026-09");
-    assert.equal(s.hours[0].panels, undefined);
-    assert.deepEqual(s.hours[0].solar, [100, 1]);
-  });
-
-  test("a panel missing from one cycle does not drag its average down", async () => {
-    // gtb800-2 went stale in the second cycle and was simply absent, per the
-    // port's contract - not present at 0.
+  test("ignores per-device and per-panel detail in the raw record", async () => {
     const dir = await fixture({
       "history-2026-09-08.jsonl":
-        line("2026-09-08T00:10:00Z", 300, 50, "charge", { "gtb800-1": 100, "gtb800-2": 200 }) +
-        line("2026-09-08T00:40:00Z", 100, 52, "charge", { "gtb800-1": 100 }),
+        JSON.stringify({
+          timestamp: "2026-09-08T00:10:00Z",
+          totalSolarWatts: 300,
+          totalAcInputWatts: 40,
+          totalAcOutputWatts: 0,
+          balanceWatts: 260,
+          solarByPanel: { "gtb800-1": 100, "gtb800-2": 200 },
+          devices: [{ sn: "A", name: "冷蔵庫", batterySoc: 50, acInputWatts: 40, targetWatts: 30, mode: "charge" }],
+        }) + "\n",
     });
     await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
-    const s = await readMonth(dir, "2026-09");
-    assert.deepEqual(s.hours[0].panels, { "gtb800-1": [200, 2], "gtb800-2": [200, 1] });
+    const s = await readMonth(dir, "2026-09") as unknown as Record<string, unknown>;
+    assert.deepEqual((s.days as { solar: [number, number] }[])[0].solar, [300, 1]);
+    assert.equal("devices" in s, false);
   });
 
   test("running twice folds nothing twice", async () => {
     const dir = await fixture({
-      "history-2026-09-08.jsonl": line("2026-09-08T00:10:00Z", 100, 50, "charge"),
+      "history-2026-09-08.jsonl": line("2026-09-08T00:10:00Z", 100),
     });
     await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
     const second = await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
 
     assert.deepEqual(second.folded, []);
     const s = await readMonth(dir, "2026-09");
-    assert.deepEqual(s.hours[0].solar, [100, 1]);
+    assert.deepEqual(s.days[0].solar, [100, 1]);
   });
 
   test("leaves the day still being written alone", async () => {
     const dir = await fixture({
-      "history-2026-09-10.jsonl": line("2026-09-10T02:00:00Z", 100, 50, "charge"),
+      "history-2026-09-10.jsonl": line("2026-09-10T02:00:00Z", 100),
     });
     const res = await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
 
@@ -139,8 +132,8 @@ describe("summarize", () => {
     const old = "2026-07-01";
     const recent = "2026-09-08";
     const dir = await fixture({
-      [`history-${old}.jsonl`]: line("2026-07-01T00:10:00Z", 100, 50, "charge"),
-      [`history-${recent}.jsonl`]: line("2026-09-08T00:10:00Z", 100, 50, "charge"),
+      [`history-${old}.jsonl`]: line("2026-07-01T00:10:00Z", 100),
+      [`history-${recent}.jsonl`]: line("2026-09-08T00:10:00Z", 100),
     });
     const res = await summarize({ dataDir: dir, retentionDays: 30, timeZone: TOKYO, now });
 
@@ -155,35 +148,35 @@ describe("summarize", () => {
   test("a torn line is skipped without losing the rest of the day", async () => {
     const dir = await fixture({
       "history-2026-09-08.jsonl":
-        line("2026-09-08T00:10:00Z", 100, 50, "charge") +
+        line("2026-09-08T00:10:00Z", 100) +
         '{"timestamp":"2026-09-08T00:2\n' +
-        line("2026-09-08T00:40:00Z", 200, 52, "charge"),
+        line("2026-09-08T00:40:00Z", 200),
     });
     const res = await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
     assert.equal(res.folded[0].records, 2);
-    assert.deepEqual((await readMonth(dir, "2026-09")).hours[0].solar, [300, 2]);
+    assert.deepEqual((await readMonth(dir, "2026-09")).days[0].solar, [300, 2]);
   });
 
   test("writes the summary atomically, leaving no .tmp behind", async () => {
     const dir = await fixture({
-      "history-2026-09-08.jsonl": line("2026-09-08T00:10:00Z", 100, 50, "charge"),
+      "history-2026-09-08.jsonl": line("2026-09-08T00:10:00Z", 100),
     });
     await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
     const files = await readdir(join(dir, "summaries"));
     assert.deepEqual(files, ["2026-09.json"]);
   });
+
   test("folds the pre-rotation log, across the months it spans", async () => {
     const dir = await fixture({
-      "history.jsonl":
-        line("2026-08-31T10:00:00Z", 100, 50, "charge") + line("2026-09-01T10:00:00Z", 200, 52, "charge"),
+      "history.jsonl": line("2026-08-31T10:00:00Z", 100) + line("2026-09-01T10:00:00Z", 200),
     });
     const res = await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
 
     assert.deepEqual(res.folded.map((f) => [f.source, f.months]), [
       ["history.jsonl", ["2026-08", "2026-09"]],
     ]);
-    assert.deepEqual((await readMonth(dir, "2026-08")).hours[0].solar, [100, 1]);
-    assert.deepEqual((await readMonth(dir, "2026-09")).hours[0].solar, [200, 1]);
+    assert.deepEqual((await readMonth(dir, "2026-08")).days[0].solar, [100, 1]);
+    assert.deepEqual((await readMonth(dir, "2026-09")).days[0].solar, [200, 1]);
     // Recorded in both, so neither month folds it a second time.
     assert.deepEqual((await readMonth(dir, "2026-08")).sources, ["history.jsonl"]);
     assert.deepEqual((await readMonth(dir, "2026-09")).sources, ["history.jsonl"]);
@@ -193,24 +186,24 @@ describe("summarize", () => {
     // The morning is in the old log and the evening in the new daily file.
     // Keyed by day the second would be skipped; keyed by source both land.
     const dir = await fixture({
-      "history.jsonl": line("2026-09-08T01:00:00Z", 100, 50, "charge"),
-      "history-2026-09-08.jsonl": line("2026-09-08T01:30:00Z", 300, 52, "charge"),
+      "history.jsonl": line("2026-09-08T01:00:00Z", 100),
+      "history-2026-09-08.jsonl": line("2026-09-08T01:30:00Z", 300),
     });
     await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
     const s = await readMonth(dir, "2026-09");
 
-    assert.deepEqual(s.hours.length, 1);
-    assert.deepEqual(s.hours[0].solar, [400, 2], "both halves of the day, counted once each");
+    assert.deepEqual(s.days.length, 1);
+    assert.deepEqual(s.days[0].solar, [400, 2], "both halves of the day, counted once each");
     assert.deepEqual(s.sources, ["history-2026-09-08.jsonl", "history.jsonl"]);
 
     // And a second run adds nothing.
     await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });
-    assert.deepEqual((await readMonth(dir, "2026-09")).hours[0].solar, [400, 2]);
+    assert.deepEqual((await readMonth(dir, "2026-09")).days[0].solar, [400, 2]);
   });
 
   test("keeps the pre-rotation log until its last record is past retention", async () => {
     const dir = await fixture({
-      "history.jsonl": line("2026-09-08T01:00:00Z", 100, 50, "charge"),
+      "history.jsonl": line("2026-09-08T01:00:00Z", 100),
     });
     // Its mtime is now, so a 60 day window still wants it.
     const kept = await summarize({ dataDir: dir, retentionDays: 60, timeZone: TOKYO, now });

@@ -127,6 +127,14 @@ export const DashboardServer = (props: {
       }
       const opts = { houseStandbyWatts: props.houseStandbyWatts, yenPerKwh: props.yenPerKwh };
 
+      // An optional fourth figure for whatever range the caller - the seek
+      // bar's current selection - is actually looking at, on top of the three
+      // fixed ones above. Both bounds must be given and make sense; otherwise
+      // there is nothing to add to the cached series' own [from, to].
+      const selFrom = Number(url.searchParams.get("from"));
+      const selTo = Number(url.searchParams.get("to"));
+      const hasSelection = Number.isFinite(selFrom) && Number.isFinite(selTo) && selTo > selFrom;
+
       sendJson(res, 200, {
         yenPerKwh: props.yenPerKwh,
         houseStandbyWatts: props.houseStandbyWatts,
@@ -134,6 +142,7 @@ export const DashboardServer = (props: {
         today: energyOf(energyCache.series, { ...opts, since: day }),
         month: energyOf(energyCache.series, { ...opts, since: month }),
         total: energyOf(energyCache.series, opts),
+        selected: hasSelection ? energyOf(energyCache.series, { ...opts, since: selFrom, until: selTo }) : null,
       });
       return;
     }

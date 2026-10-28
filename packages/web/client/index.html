@@ -41,6 +41,10 @@
           <div id="seek-handle-right" class="handle right"></div>
         </div>
       </div>
+      <!-- Jumps straight to a common range - dragging a precise narrow window
+           out of a 30-day-wide bar is hard with a finger, so this covers the
+           cases that don't need the drag's custom range at all. -->
+      <nav id="seek-presets" class="seek-presets"></nav>
       <main id="charts"></main>
       <footer id="meta"></footer>
     </section>

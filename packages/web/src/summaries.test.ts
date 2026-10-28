@@ -8,22 +8,14 @@ import { SummaryStore } from "./summaries";
 
 const T0 = Date.UTC(2026, 7, 1, 0, 0, 0); // 2026-08-01T00:00Z
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 
-const month = (hours: unknown[], devices = [{ sn: "A", name: "冷蔵庫" }]) =>
-  JSON.stringify({ month: "2026-08", timeZone: "Asia/Tokyo", days: [], devices, hours });
+const month = (days: unknown[]) => JSON.stringify({ month: "2026-08", timeZone: "Asia/Tokyo", days });
 
-/** One hour standing for `n` cycles averaging `avg` watts of solar. */
-const hour = (
-  offsetH: number,
-  avg: number,
-  n: number,
-  dev?: unknown[],
-  panels?: Record<string, [number, number]>,
-) => ({
-  t: T0 + offsetH * HOUR,
+/** One day standing for `n` cycles averaging `avg` watts of solar. */
+const day = (offsetDays: number, avg: number, n: number) => ({
+  t: T0 + offsetDays * DAY,
   solar: [avg * n, n],
-  dev: dev ?? [{ soc: [50 * n, n], m: { passthrough: n } }],
-  panels,
 });
 
 async function fixture(files: Record<string, string>) {
@@ -36,55 +28,77 @@ async function fixture(files: Record<string, string>) {
 }
 
 describe("SummaryStore", () => {
-  test("contributes an hour as the mean of the cycles behind it", async () => {
-    const { store } = await fixture({ "2026-08.json": month([hour(0, 120, 120)]) });
-    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
+  test("spreads a day's total evenly across its 24 hours", async () => {
+    const { store } = await fixture({ "2026-08.json": month([day(0, 120, 2880)]) });
+    // One bucket per hour of the day: each should read back the day's own
+    // average, not the whole day's energy crammed into a single hour.
+    const b = SeriesBuilder({ from: T0, to: T0 + DAY, buckets: 24 });
     store.contribute(b, Number.POSITIVE_INFINITY);
     const s = b.finish();
 
+    assert.equal(s.solar.length, 24);
+    for (const v of s.solar) assert.equal(v, 120);
+  });
+
+  test("recovers the day's true mean when queried as a single bucket", async () => {
+    const { store } = await fixture({ "2026-08.json": month([day(0, 120, 2880)]) });
+    const b = SeriesBuilder({ from: T0, to: T0 + DAY, buckets: 1 });
+    store.contribute(b, Number.POSITIVE_INFINITY);
+    const s = b.finish();
+
+    // All 24 virtual hours fold back into the one bucket; the sum/count
+    // division by 24 and the re-aggregation by 24 cancel out exactly.
     assert.deepEqual(s.solar, [120]);
-    assert.deepEqual(s.devices[0].soc, [50]);
-    assert.deepEqual(s.devices[0].mode, ["passthrough"]);
     assert.deepEqual(store.span(), { from: T0, to: T0 });
   });
 
-  test("skips hours the raw log already covers", async () => {
-    const { store } = await fixture({ "2026-08.json": month([hour(0, 100, 120), hour(1, 900, 120)]) });
-    const b = SeriesBuilder({ from: T0, to: T0 + 2 * HOUR, buckets: 2 });
-    // The raw log starts at the second hour, so only the first may be filled in.
-    store.contribute(b, T0 + HOUR);
+  test("skips a day the raw log already covers", async () => {
+    const { store } = await fixture({ "2026-08.json": month([day(0, 100, 2880), day(1, 900, 2880)]) });
+    const b = SeriesBuilder({ from: T0, to: T0 + 2 * DAY, buckets: 2 });
+    // The raw log starts at the second day, so only the first may be filled in.
+    store.contribute(b, T0 + DAY);
     const s = b.finish();
 
     assert.deepEqual(s.solar, [100, null]);
   });
 
-  test("an hour outweighs a single raw cycle in the same bucket", async () => {
-    const { store } = await fixture({ "2026-08.json": month([hour(0, 100, 120)]) });
-    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
-    // One raw sample of 200W lands in the same bucket as an hour standing for
-    // 120 cycles at 100W. Averaging the two means would give 150; weighting by
-    // count gives 100.8, which is the true mean of the 121 cycles.
-    b.addGlobal("solar", 0, 200, 1);
+  test("a day outweighs a single raw cycle in the same bucket", async () => {
+    const { store } = await fixture({ "2026-08.json": month([day(0, 100, 2880)]) });
+    const b = SeriesBuilder({ from: T0, to: T0 + DAY, buckets: 1 });
+    // One raw sample of 2000W lands in the same bucket as a day standing for
+    // 2880 cycles at 100W. Averaging the two means would give 1050; weighting
+    // by count gives the true mean of the 2881 cycles.
+    b.addGlobal("solar", 0, 2000, 1);
     store.contribute(b, Number.POSITIVE_INFINITY);
     const s = b.finish();
 
     assert.ok(s.solar[0] !== null);
-    assert.equal(Number(s.solar[0]).toFixed(2), "100.83");
+    assert.equal(Number(s.solar[0]).toFixed(2), "100.66");
+  });
+
+  test("contributes no per-device or per-panel detail - only the global totals", async () => {
+    const { store } = await fixture({ "2026-08.json": month([day(0, 100, 2880)]) });
+    const b = SeriesBuilder({ from: T0, to: T0 + DAY, buckets: 1 });
+    store.contribute(b, Number.POSITIVE_INFINITY);
+    const s = b.finish();
+
+    assert.deepEqual(s.devices, []);
+    assert.deepEqual(s.panels, []);
   });
 
   test("ignores a corrupt month without losing the others", async () => {
     const { store } = await fixture({
-      "2026-08.json": month([hour(0, 100, 120)]),
+      "2026-08.json": month([day(0, 100, 2880)]),
       "2026-09.json": "{ this is not json",
     });
     assert.deepEqual(store.months(), ["2026-08"]);
-    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
+    const b = SeriesBuilder({ from: T0, to: T0 + DAY, buckets: 1 });
     store.contribute(b, Number.POSITIVE_INFINITY);
     assert.deepEqual(b.finish().solar, [100]);
   });
 
   test("forgets a month whose file was removed", async () => {
-    const { store, dir } = await fixture({ "2026-08.json": month([hour(0, 100, 120)]) });
+    const { store, dir } = await fixture({ "2026-08.json": month([day(0, 100, 2880)]) });
     assert.deepEqual(store.months(), ["2026-08"]);
     await rm(join(dir, "summaries", "2026-08.json"));
     assert.equal(await store.refresh(), undefined);
@@ -97,44 +111,5 @@ describe("SummaryStore", () => {
     const store = SummaryStore({ dataDir: dir });
     assert.equal(await store.refresh(), undefined);
     assert.deepEqual(store.months(), []);
-  });
-
-  test("a device slot with no matching name is skipped rather than misattributed", async () => {
-    // `dev` is positional against `devices`; a file listing one device but two
-    // slots must not invent a second unit.
-    const { store } = await fixture({
-      "2026-08.json": month([hour(0, 100, 10, [{ soc: [500, 10] }, { soc: [900, 10] }])]),
-    });
-    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
-    store.contribute(b, Number.POSITIVE_INFINITY);
-    const s = b.finish();
-    assert.equal(s.devices.length, 1);
-    assert.deepEqual(s.devices[0].soc, [50]);
-  });
-
-  test("contributes per-panel hourly wattage, keyed directly by name", async () => {
-    const { store } = await fixture({
-      "2026-08.json": month([
-        hour(0, 300, 10, undefined, { "gtb800-1": [1000, 10], "gtb800-2": [2000, 10] }),
-      ]),
-    });
-    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
-    store.contribute(b, Number.POSITIVE_INFINITY);
-    const s = b.finish();
-    assert.deepEqual(
-      s.panels.map((p) => p.name),
-      ["gtb800-1", "gtb800-2"],
-    );
-    assert.deepEqual(s.panels[0].watts, [100]);
-    assert.deepEqual(s.panels[1].watts, [200]);
-  });
-
-  test("an hour with no panel breakdown at all still contributes its total", async () => {
-    const { store } = await fixture({ "2026-08.json": month([hour(0, 100, 10)]) });
-    const b = SeriesBuilder({ from: T0, to: T0 + HOUR, buckets: 1 });
-    store.contribute(b, Number.POSITIVE_INFINITY);
-    const s = b.finish();
-    assert.deepEqual(s.panels, []);
-    assert.deepEqual(s.solar, [100]);
   });
 });

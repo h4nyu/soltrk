@@ -47,6 +47,9 @@ type Energy = {
   today: Totals;
   month: Totals;
   total: Totals;
+  /** Only present when requested with a from/to - the seek bar's current
+   *  selection, which is any range and not one of the three fixed ones above. */
+  selected: Totals | null;
 };
 type Totals = { generatedKwh: number; usedKwh: number; yen: number };
 
@@ -565,6 +568,35 @@ bindSeekDrag(el("seek-window"), "pan", false);
 bindSeekDrag(el("seek-handle-left"), "left", true);
 bindSeekDrag(el("seek-handle-right"), "right", true);
 
+/**
+ * Jumps straight to a common range ending at the live edge, for the cases a
+ * finger can't reliably drag out of a 30-day-wide bar: a precise narrow
+ * window, or exactly the full overview span. The drag handles stay for
+ * anything in between.
+ */
+const SEEK_PRESETS: { label: string; spanMs: number }[] = [
+  { label: "24時間", spanMs: DAY_MS },
+  { label: "7日間", spanMs: 7 * DAY_MS },
+  { label: "30日間", spanMs: OVERVIEW_SPAN_MS },
+];
+
+const applyPreset = (spanMs: number): void => {
+  selTo = overviewBounds.to;
+  selFrom = Math.max(overviewBounds.from, selTo - spanMs);
+  followLive = true;
+  layoutSeekWindow();
+  void refreshHistory();
+};
+
+el("seek-presets").append(
+  ...SEEK_PRESETS.map((p) => {
+    const btn = document.createElement("button");
+    btn.textContent = p.label;
+    btn.addEventListener("click", () => applyPreset(p.spanMs));
+    return btn;
+  }),
+);
+
 const refreshOverview = async (): Promise<void> => {
   try {
     const to = Date.now();
@@ -596,14 +628,26 @@ const HISTORY_POLL_MAX_MS = 10 * 60_000;
  *  back on it far less often than the detail charts. */
 const OVERVIEW_POLL_MS = 5 * 60_000;
 
-/** Columnar data for each chart, in the order buildCharts creates them. */
+// Shared by buildCharts and seriesData so the two can't drift apart: each
+// chart that only sometimes exists needs the exact same test in both places,
+// since seriesData's output is matched back to the live `charts` array by
+// position (see updateCharts) - one chart skipped in only one of the two
+// shifts every later chart's data onto the wrong plot.
+const havePanelDetail = (s: Series): boolean => s.panels.length > 0;
+const haveDeviceDetail = (s: Series): boolean => s.devices.some((d) => d.soc.some((v) => v !== null));
+
+/** Columnar data for each chart buildCharts actually creates, in that order. */
 const seriesData = (s: Series): uPlot.AlignedData[] => {
   const xs = s.t.map((ms) => ms / 1000);
-  return [
-    [xs, s.solar, s.balance],
-    [xs, ...s.devices.map((d) => d.soc)],
-    [xs, ...s.devices.flatMap((d) => [d.acIn, d.target])],
-  ] as unknown as uPlot.AlignedData[];
+  const out: uPlot.AlignedData[] = [[xs, s.solar, s.balance] as unknown as uPlot.AlignedData];
+  if (havePanelDetail(s)) {
+    out.push([xs, ...s.panels.map((pn) => pn.watts)] as unknown as uPlot.AlignedData);
+  }
+  if (haveDeviceDetail(s)) {
+    out.push([xs, ...s.devices.map((d) => d.soc)] as unknown as uPlot.AlignedData);
+    out.push([xs, ...s.devices.flatMap((d) => [d.acIn, d.target])] as unknown as uPlot.AlignedData);
+  }
+  return out;
 };
 
 const buildCharts = (s: Series): void => {
@@ -631,7 +675,7 @@ const buildCharts = (s: Series): void => {
   // Absent rather than empty when nothing has reported a breakdown yet -
   // either this range predates per-panel tracking, or the loop hasn't been
   // restarted onto it - so there is no line with literally nothing in it.
-  if (s.panels.length > 0) {
+  if (havePanelDetail(s)) {
     makeChart(
       host,
       "パネルごとの発電",
@@ -646,37 +690,45 @@ const buildCharts = (s: Series): void => {
     );
   }
 
-  makeChart(
-    host,
-    "バッテリー残量",
-    "6%が放電下限。ここに張り付いている間は蓄電の余裕がない。",
-    xs,
-    s.devices.map((d, i) => ({
-      label: d.name,
-      data: d.soc,
-      color: css(DEVICE_STROKES[i % DEVICE_STROKES.length]),
-    })),
-    { unit: "%" },
-  );
-
-  makeChart(
-    host,
-    "充電指令 vs 実測AC取り込み",
-    "破線が指令(targetWatts)、実線が実測。立ち上がりでどれだけ遅れるかがそのまま追従性能。",
-    xs,
-    s.devices.flatMap((d, i) => [
-      { label: `${d.name} 実測`, data: d.acIn, color: css(DEVICE_STROKES[i % DEVICE_STROKES.length]) },
-      {
-        label: `${d.name} 指令`,
-        data: d.target,
+  // Devices are always registered (they exist for the whole life of the
+  // system), so - unlike panels above - an empty `s.devices` never signals a
+  // range with no detail. What does is every value coming back null: past the
+  // raw retention window a day only has its three global totals (see
+  // cli/summary.ts's `Day`), no per-device split, so these three charts would
+  // otherwise render as empty shells rather than being absent.
+  if (haveDeviceDetail(s)) {
+    makeChart(
+      host,
+      "バッテリー残量",
+      "6%が放電下限。ここに張り付いている間は蓄電の余裕がない。",
+      xs,
+      s.devices.map((d, i) => ({
+        label: d.name,
+        data: d.soc,
         color: css(DEVICE_STROKES[i % DEVICE_STROKES.length]),
-        dash: [4, 4],
-      },
-    ]),
-    { unit: "W" },
-  );
+      })),
+      { unit: "%" },
+    );
 
-  makeModeStrips(host, s);
+    makeChart(
+      host,
+      "充電指令 vs 実測AC取り込み",
+      "破線が指令(targetWatts)、実線が実測。立ち上がりでどれだけ遅れるかがそのまま追従性能。",
+      xs,
+      s.devices.flatMap((d, i) => [
+        { label: `${d.name} 実測`, data: d.acIn, color: css(DEVICE_STROKES[i % DEVICE_STROKES.length]) },
+        {
+          label: `${d.name} 指令`,
+          data: d.target,
+          color: css(DEVICE_STROKES[i % DEVICE_STROKES.length]),
+          dash: [4, 4],
+        },
+      ]),
+      { unit: "W" },
+    );
+
+    makeModeStrips(host, s);
+  }
   // The charts were built before the strips existed, so their `ready` hooks
   // fired into an empty listener list. Run one alignment pass now that both
   // sides are in place.
@@ -701,7 +753,7 @@ const updateCharts = (s: Series): void => {
   repaintStrips();
 };
 
-const renderMeta = (s: Series): void => {
+const renderMeta = (s: Series, selected: Totals | null): void => {
   const av = s.available;
   if (!av) {
     el("meta").textContent = "履歴なし";
@@ -722,6 +774,9 @@ const renderMeta = (s: Series): void => {
   if (s.rawFrom !== null && s.from < s.rawFrom) {
     parts.push(`${new Date(s.rawFrom).toLocaleDateString("ja-JP")} より前は月次サマリー(1時間平均)`);
   }
+  // The watts charts above already show the shape; this is the one place the
+  // selected range's total value in yen shows up.
+  if (selected) parts.push(`この期間の節約額 ${yen(selected.yen)} (${kwh(selected.usedKwh)})`);
   el("meta").textContent = parts.join(" / ");
 };
 
@@ -751,11 +806,11 @@ const scheduleHistory = (bucketMs: number): void => {
 };
 
 const refreshHistory = async (): Promise<void> => {
+  const from = Math.round(selFrom);
+  const to = Math.round(selTo);
   let s: Series;
   try {
-    s = (await fetch(`/api/history?from=${Math.round(selFrom)}&to=${Math.round(selTo)}&buckets=600`).then((r) =>
-      r.json(),
-    )) as Series;
+    s = (await fetch(`/api/history?from=${from}&to=${to}&buckets=600`).then((r) => r.json())) as Series;
   } catch (err) {
     console.error("[soltrk] history refresh failed", err);
     scheduleHistory(STATE_POLL_MS);
@@ -772,7 +827,18 @@ const refreshHistory = async (): Promise<void> => {
   } else {
     updateCharts(s);
   }
-  renderMeta(s);
+
+  // Fetched separately from, and after, the history above: the yen figure is
+  // a one-line addition to the meta footer, not something the charts
+  // themselves should ever wait on or disappear over if this one call has a
+  // bad moment.
+  let selected: Totals | null = null;
+  try {
+    selected = ((await fetch(`/api/energy?from=${from}&to=${to}`).then((r) => r.json())) as Energy).selected;
+  } catch (err) {
+    console.error("[soltrk] selected-range energy refresh failed", err);
+  }
+  renderMeta(s, selected);
   scheduleHistory(s.bucketMs);
 };
 
